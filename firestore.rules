@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "manuel.valdes91q@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    // Devices
+    match /devices/{deviceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Logs
+    match /logs/{logId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Provisioning
+    match /provisioning/{provId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Settings
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Telegram Users
+    match /telegram_users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Interfaces
+    match /interfaces/{interfaceId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

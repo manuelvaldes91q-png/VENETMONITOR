@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "Device": {
+      "title": "Device",
+      "description": "A monitored device (Antenna, VPS, or Router)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the device" },
+        "type": { "type": "string", "enum": ["antenna", "vps", "router"], "description": "Type of device" },
+        "ip": { "type": "string", "description": "IP address" },
+        "mac": { "type": "string", "description": "MAC address (for provisioning)" },
+        "status": { "type": "string", "enum": ["up", "down"], "description": "Current status" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last time the device was reachable" },
+        "telegramEnabled": { "type": "boolean", "description": "Whether to send notifications for this device" }
+      },
+      "required": ["name", "type", "ip"]
+    },
+    "MonitoringLog": {
+      "title": "Monitoring Log",
+      "description": "Historical status and latency data",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string", "description": "ID of the device" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the check occurred" },
+        "status": { "type": "string", "enum": ["up", "down"] },
+        "latency": { "type": "number", "description": "Ping latency in ms" }
+      },
+      "required": ["deviceId", "timestamp", "status"]
+    },
+    "Provisioning": {
+      "title": "Provisioning",
+      "description": "IP-MAC binding records with DHCP, ARP and Speed Limit",
+      "type": "object",
+      "properties": {
+        "ip": { "type": "string" },
+        "mac": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "dhcpLease": { "type": "boolean", "description": "DHCP Static Lease enabled" },
+        "arpEnabled": { "type": "boolean", "description": "ARP entry added" },
+        "speedLimit": { "type": "string", "description": "Speed limit (e.g., 10M/10M)" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ip", "mac"]
+    },
+    "TelegramUser": {
+      "title": "Telegram User",
+      "description": "User authorized to receive Telegram notifications",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "chatId": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "chatId"]
+    },
+    "DeviceInterface": {
+      "title": "Device Interface",
+      "description": "Status of a physical port on a MikroTik device",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["up", "down"] },
+        "trafficIn": { "type": "number", "description": "Current download in bps" },
+        "trafficOut": { "type": "number", "description": "Current upload in bps" },
+        "lastUpdate": { "type": "string", "format": "date-time" }
+      },
+      "required": ["deviceId", "name", "status"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Global configuration",
+      "type": "object",
+      "properties": {
+        "telegramBotToken": { "type": "string" },
+        "telegramChatId": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Monitored devices"
+    },
+    "/logs/{logId}": {
+      "schema": "MonitoringLog",
+      "description": "Monitoring history"
+    },
+    "/provisioning/{provId}": {
+      "schema": "Provisioning",
+      "description": "IP-MAC bindings"
+    },
+    "/settings/global": {
+      "schema": "Settings",
+      "description": "Global app settings"
+    },
+    "/telegram_users/{userId}": {
+      "schema": "TelegramUser",
+      "description": "Authorized Telegram notification recipients"
+    },
+    "/interfaces/{interfaceId}": {
+      "schema": "DeviceInterface",
+      "description": "Port status for MikroTik devices"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "MikroTik & VPS Monitor",
+  "description": "Sistema de monitoreo para MikroTik, antenas y VPS con notificaciones por Telegram y aprovisionamiento IP-MAC.",
+  "requestFramePermissions": []
+}
