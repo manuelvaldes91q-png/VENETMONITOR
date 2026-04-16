@@ -8,6 +8,7 @@ import cron from "node-cron";
 import FormData from "form-data";
 import Database from "better-sqlite3";
 import fs from "fs";
+const MikroNode = require('mikrotik-node');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,6 +60,15 @@ db.exec(`
     status TEXT,
     trafficIn REAL,
     trafficOut REAL,
+    lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS router_stats (
+    deviceId TEXT PRIMARY KEY,
+    cpuUsage REAL,
+    ramFree REAL,
+    ramTotal REAL,
+    uptime TEXT,
     lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -180,6 +190,12 @@ async function startServer() {
   // Oracle
   app.get("/api/oracle", (req, res) => {
     res.json(getSetting("oracle") || null);
+  });
+
+  app.get("/api/router-stats/:deviceId", (req, res) => {
+    const stats = db.prepare("SELECT * FROM router_stats WHERE deviceId = ?").get(req.params.deviceId);
+    const interfaces = db.prepare("SELECT * FROM interfaces WHERE deviceId = ?").all(req.params.deviceId);
+    res.json({ stats, interfaces });
   });
 
   app.post("/api/oracle", (req, res) => {
@@ -337,13 +353,60 @@ async function startServer() {
             }).catch(e => console.error("TG Error", e.message));
           }
         }
+
+        // Fetch Stats if it's a router and online
+        if (device.type === 'router' && result.alive && device.username && device.password) {
+          try {
+            const connection = new MikroNode(device.ip, device.username, device.password, { 
+              port: device.apiPort || 8728,
+              timeout: 10
+            });
+            const client = await connection.connect();
+            
+            // 1. Fetch Resources
+            const resData = await client.write('/system/resource/print');
+            const data = resData[0];
+            
+            db.prepare(`
+              INSERT OR REPLACE INTO router_stats (deviceId, cpuUsage, ramFree, ramTotal, uptime, lastUpdate)
+              VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(
+              device.id,
+              parseFloat(data['cpu-load'] || '0'),
+              parseFloat(data['free-memory'] || '0') / 1024 / 1024,
+              parseFloat(data['total-memory'] || '0') / 1024 / 1024,
+              data['uptime'] || ''
+            );
+
+            // 2. Fetch Interfaces
+            const interfaces = await client.write('/interface/print');
+            for (const iface of interfaces) {
+              const id = `${device.id}_${iface.name}`;
+              db.prepare(`
+                INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              `).run(
+                id,
+                device.id,
+                iface.name,
+                iface.running === 'true' ? 'up' : 'down',
+                parseFloat(iface['rx-byte'] || '0') / 1024 / 1024,
+                parseFloat(iface['tx-byte'] || '0') / 1024 / 1024
+              );
+            }
+
+            client.close();
+          } catch (apiErr: any) {
+            console.error(`MikroTik API Error (${device.name}):`, apiErr.message);
+          }
+        }
       }
     } catch (err) {
       console.error("Monitor error", err);
     }
   };
 
-  setInterval(monitorDevices, 120000);
+  setInterval(monitorDevices, 30000);
 
   // Vite setup
   if (process.env.NODE_ENV !== "production") {

@@ -281,6 +281,26 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
     return { up, down, total: devices.length };
   }, [devices]);
 
+  const [routerStats, setRouterStats] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchAllStats = async () => {
+      const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
+      const results = await Promise.all(
+        routers.map(async (r: any) => {
+          try {
+            const res = await axios.get(`/api/router-stats/${r.id}`);
+            return { deviceId: r.id, name: r.name, ...res.data };
+          } catch (e) { return null; }
+        })
+      );
+      setRouterStats(results.filter(r => r !== null));
+    };
+    fetchAllStats();
+    const inv = setInterval(fetchAllStats, 10000);
+    return () => clearInterval(inv);
+  }, [devices]);
+
   return (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
@@ -294,37 +314,100 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
       </header>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="bg-[#111] border-[#262626] hover:border-blue-500/50 transition-all">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <Card className="bg-[#111] border-[#262626]">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-400">Dispositivos Online</CardTitle>
+            <CardTitle className="text-sm font-medium text-gray-400">Online</CardTitle>
             <CheckCircle2 className="w-4 h-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-4xl font-bold text-white">{stats.up}</div>
-            <p className="text-xs text-gray-500 mt-1">Sistemas operando correctamente</p>
+            <div className="text-3xl font-bold text-white">{stats.up}</div>
           </CardContent>
         </Card>
-        <Card className="bg-[#111] border-[#262626] hover:border-red-500/50 transition-all">
+        <Card className="bg-[#111] border-[#262626]">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-400">Dispositivos Offline</CardTitle>
+            <CardTitle className="text-sm font-medium text-gray-400">Offline</CardTitle>
             <AlertTriangle className="w-4 h-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-4xl font-bold text-white">{stats.down}</div>
-            <p className="text-xs text-gray-500 mt-1">Requieren atención inmediata</p>
+            <div className="text-3xl font-bold text-white">{stats.down}</div>
           </CardContent>
         </Card>
-        <Card className="bg-[#111] border-[#262626] hover:border-purple-500/50 transition-all">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-400">Latencia Promedio</CardTitle>
-            <Activity className="w-4 h-4 text-purple-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-4xl font-bold text-white">12ms</div>
-            <p className="text-xs text-gray-500 mt-1">Estabilidad de red global</p>
-          </CardContent>
-        </Card>
+        {routerStats.length > 0 && (
+          <>
+            <Card className="bg-[#111] border-[#262626]">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium text-gray-400">CPU Global</CardTitle>
+                <Cpu className="w-4 h-4 text-purple-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold text-white">{Math.round(routerStats[0].stats?.cpuUsage || 0)}%</div>
+              </CardContent>
+            </Card>
+            <Card className="bg-[#111] border-[#262626]">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium text-gray-400">RAM Libre</CardTitle>
+                <Database className="w-4 h-4 text-blue-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold text-white">{Math.round(routerStats[0].stats?.ramFree || 0)}MB</div>
+              </CardContent>
+            </Card>
+          </>
+        )}
+      </div>
+
+      {/* Traffic and Resources Graphs */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {routerStats.map(rs => (
+          <Card key={rs.deviceId} className="bg-[#111] border-[#262626] overflow-hidden">
+            <CardHeader>
+              <CardTitle className="text-white text-md flex items-center gap-2">
+                <Activity className="w-4 h-4 text-blue-500" />
+                Tráfico de Interfaces: {rs.name}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[250px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={rs.interfaces}>
+                    <defs>
+                      <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      </linearGradient>
+                      <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#262626" vertical={false} />
+                    <XAxis dataKey="name" stroke="#525252" fontSize={10} tickLine={false} axisLine={false} />
+                    <YAxis stroke="#525252" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val}M`} />
+                    <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #262626', borderRadius: '8px' }} />
+                    <Area type="monotone" dataKey="trafficIn" name="Download" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" />
+                    <Area type="monotone" dataKey="trafficOut" name="Upload" stroke="#8b5cf6" fillOpacity={1} fill="url(#colorOut)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-4">
+                <div className="p-3 bg-[#1a1a1a] rounded-lg border border-[#262626]">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Carga CPU</span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-zinc-800 rounded-full">
+                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${rs.stats?.cpuUsage || 0}%` }} />
+                    </div>
+                    <span className="text-xs font-bold text-white">{rs.stats?.cpuUsage}%</span>
+                  </div>
+                </div>
+                <div className="p-3 bg-[#1a1a1a] rounded-lg border border-[#262626]">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">RAM Libre</span>
+                  <div className="text-sm font-bold text-white">{Math.round(rs.stats?.ramFree || 0)} MB</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
       {/* Oracle AI Section */}
@@ -388,10 +471,28 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
 
 function InfrastructureView({ mode, devices, onRefresh }: any) {
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [selectedDevice, setSelectedDevice] = useState<any>(null);
+  const [deviceDetails, setDeviceDetails] = useState<any>(null);
   const [newDevice, setNewDevice] = useState<Partial<Device>>({
     type: mode === 'mikrotik' ? 'router' : 'antenna',
     telegramEnabled: true
   });
+
+  useEffect(() => {
+    if (selectedDevice) {
+      const fetchDetails = async () => {
+        try {
+          const res = await axios.get(`/api/router-stats/${selectedDevice.id}`);
+          setDeviceDetails(res.data);
+        } catch (e) {
+          toast.error("Error al obtener detalles del router");
+        }
+      };
+      fetchDetails();
+      const inv = setInterval(fetchDetails, 15000);
+      return () => clearInterval(inv);
+    }
+  }, [selectedDevice]);
 
   const handleAdd = async () => {
     if (!newDevice.name || !newDevice.ip) return toast.error("Nombre e IP son requeridos");
@@ -429,108 +530,193 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
           <h2 className="text-3xl font-bold text-white">{mode === 'mikrotik' ? 'Infraestructura' : 'Antenas'}</h2>
           <p className="text-zinc-400">Gestión de equipos locales y remotos.</p>
         </div>
-        <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-          <DialogTrigger asChild>
-            <Button className="bg-blue-600 hover:bg-blue-700"><Plus className="w-4 h-4 mr-2" /> Agregar</Button>
-          </DialogTrigger>
-          <DialogContent className="bg-[#111] border-[#262626] text-white">
-            <DialogHeader><DialogTitle>Nuevo Dispositivo</DialogTitle></DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>Nombre</Label>
-                <Input className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewDevice({...newDevice, name: e.target.value})} />
-              </div>
-              <div className="space-y-2">
-                <Label>IP Address</Label>
-                <Input className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewDevice({...newDevice, ip: e.target.value})} />
-              </div>
-              {mode === 'mikrotik' && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Tipo</Label>
-                    <select 
-                      className="w-full bg-[#1a1a1a] border-[#262626] rounded-md p-2 text-sm text-white" 
-                      onChange={e => setNewDevice({...newDevice, type: e.target.value as any})}
-                    >
-                      <option value="router">MikroTik Router (API)</option>
-                      <option value="vps">Servidor VPS (Ping)</option>
-                    </select>
-                  </div>
-                  
-                  {newDevice.type === 'router' && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Puerto API</Label>
-                        <Input 
-                          type="number" 
-                          placeholder="8728" 
-                          className="bg-[#1a1a1a] border-[#262626]" 
-                          onChange={e => setNewDevice({...newDevice, apiPort: parseInt(e.target.value)})} 
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Usuario</Label>
-                        <Input 
-                          placeholder="admin" 
-                          className="bg-[#1a1a1a] border-[#262626]" 
-                          onChange={e => setNewDevice({...newDevice, username: e.target.value})} 
-                        />
-                      </div>
-                      <div className="space-y-2 col-span-2">
-                        <Label>Contraseña</Label>
-                        <Input 
-                          type="password" 
-                          placeholder="••••••••" 
-                          className="bg-[#1a1a1a] border-[#262626]" 
-                          onChange={e => setNewDevice({...newDevice, password: e.target.value})} 
-                        />
-                      </div>
-                    </div>
-                  )}
+        <div className="flex gap-2">
+          {selectedDevice && (
+            <Button variant="outline" onClick={() => setSelectedDevice(null)} className="border-[#262626] text-gray-400">
+              <LogOut className="w-4 h-4 mr-2" /> Cerrar Detalles
+            </Button>
+          )}
+          <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+            <DialogTrigger asChild>
+              <Button className="bg-blue-600 hover:bg-blue-700"><Plus className="w-4 h-4 mr-2" /> Agregar</Button>
+            </DialogTrigger>
+            <DialogContent className="bg-[#111] border-[#262626] text-white">
+              <DialogHeader><DialogTitle>Nuevo Dispositivo</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label>Nombre</Label>
+                  <Input className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewDevice({...newDevice, name: e.target.value})} />
                 </div>
-              )}
-              <div className="flex items-center gap-2">
-                <Switch checked={newDevice.telegramEnabled} onCheckedChange={c => setNewDevice({...newDevice, telegramEnabled: c})} />
-                <Label>Notificaciones Telegram</Label>
+                <div className="space-y-2">
+                  <Label>IP Address</Label>
+                  <Input className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewDevice({...newDevice, ip: e.target.value})} />
+                </div>
+                {mode === 'mikrotik' && (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Tipo</Label>
+                      <select 
+                        className="w-full bg-[#1a1a1a] border-[#262626] rounded-md p-2 text-sm text-white" 
+                        onChange={e => setNewDevice({...newDevice, type: e.target.value as any})}
+                      >
+                        <option value="router">MikroTik Router (API)</option>
+                        <option value="vps">Servidor VPS (Ping)</option>
+                      </select>
+                    </div>
+                    
+                    {newDevice.type === 'router' && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>Puerto API</Label>
+                          <Input 
+                            type="number" 
+                            placeholder="8728" 
+                            className="bg-[#1a1a1a] border-[#262626]" 
+                            onChange={e => setNewDevice({...newDevice, apiPort: parseInt(e.target.value)})} 
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Usuario</Label>
+                          <Input 
+                            placeholder="admin" 
+                            className="bg-[#1a1a1a] border-[#262626]" 
+                            onChange={e => setNewDevice({...newDevice, username: e.target.value})} 
+                          />
+                        </div>
+                        <div className="space-y-2 col-span-2">
+                          <Label>Contraseña</Label>
+                          <Input 
+                            type="password" 
+                            placeholder="••••••••" 
+                            className="bg-[#1a1a1a] border-[#262626]" 
+                            onChange={e => setNewDevice({...newDevice, password: e.target.value})} 
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <Switch checked={newDevice.telegramEnabled} onCheckedChange={c => setNewDevice({...newDevice, telegramEnabled: c})} />
+                  <Label>Notificaciones Telegram</Label>
+                </div>
               </div>
-            </div>
-            <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Guardar</Button></DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Guardar</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </header>
 
-      <Card className="bg-[#111] border-[#262626]">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-[#262626]">
-              <TableHead>Dispositivo</TableHead>
-              <TableHead>IP</TableHead>
-              <TableHead>Estado</TableHead>
-              <TableHead>Telegram</TableHead>
-              <TableHead className="text-right">Acciones</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {devices.map((d: Device) => (
-              <TableRow key={d.id} className="border-[#262626]">
-                <TableCell className="font-medium text-white">{d.name}</TableCell>
-                <TableCell className="font-mono text-xs">{d.ip}</TableCell>
-                <TableCell>
-                  <Badge className={d.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>
-                    {d.status.toUpperCase()}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <button onClick={() => toggleTelegram(d)}>{d.telegramEnabled ? <Bell className="w-4 h-4 text-blue-500" /> : <BellOff className="w-4 h-4 text-gray-600" />}</button>
-                </TableCell>
-                <TableCell className="text-right">
-                  <button onClick={() => handleDelete(d.id)} className="text-gray-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
-                </TableCell>
+      {!selectedDevice ? (
+        <Card className="bg-[#111] border-[#262626]">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-[#262626]">
+                <TableHead>Dispositivo</TableHead>
+                <TableHead>IP</TableHead>
+                <TableHead>Estado</TableHead>
+                <TableHead>Telegram</TableHead>
+                <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
+            </TableHeader>
+            <TableBody>
+              {devices.map((d: Device) => (
+                <TableRow key={d.id} className="border-[#262626] cursor-pointer hover:bg-[#1a1a1a]" onClick={() => setSelectedDevice(d)}>
+                  <TableCell className="font-medium text-white">{d.name}</TableCell>
+                  <TableCell className="font-mono text-xs">{d.ip}</TableCell>
+                  <TableCell>
+                    <Badge className={d.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>
+                      {d.status.toUpperCase()}
+                    </Badge>
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => toggleTelegram(d)}>{d.telegramEnabled ? <Bell className="w-4 h-4 text-blue-500" /> : <BellOff className="w-4 h-4 text-gray-600" />}</button>
+                  </TableCell>
+                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => handleDelete(d.id)} className="text-gray-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1 space-y-6">
+            <Card className="bg-[#111] border-[#262626]">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2 italic">
+                  <Cpu className="w-4 h-4 text-blue-500" /> Recursos: {selectedDevice.name}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
+                  <Label className="text-[10px] text-gray-500 uppercase font-extrabold block mb-2">CPU LOAD</Label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 h-2 bg-zinc-800 rounded-full">
+                      <div 
+                        className="h-full bg-blue-500 rounded-full transition-all duration-500" 
+                        style={{ width: `${deviceDetails?.stats?.cpuUsage || 0}%` }} 
+                      />
+                    </div>
+                    <span className="text-lg font-bold text-white">{deviceDetails?.stats?.cpuUsage || 0}%</span>
+                  </div>
+                </div>
+                <div className="p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
+                  <Label className="text-[10px] text-gray-500 uppercase font-extrabold block mb-2">FREE RAM</Label>
+                  <div className="text-2xl font-bold text-white">{Math.round(deviceDetails?.stats?.ramFree || 0)} MB</div>
+                  <span className="text-xs text-gray-500">de {Math.round(deviceDetails?.stats?.ramTotal || 0)} MB totales</span>
+                </div>
+                <div className="p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
+                  <Label className="text-[10px] text-gray-500 uppercase font-extrabold block mb-2">UPTIME</Label>
+                  <div className="text-sm font-mono text-blue-400">{deviceDetails?.stats?.uptime || 'Consultando...'}</div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="lg:col-span-2">
+            <Card className="bg-[#111] border-[#262626]">
+              <CardHeader>
+                <CardTitle className="text-white flex items-center gap-2">
+                  <Network className="w-4 h-4 text-green-500" /> Puertos e Interfaces
+                </CardTitle>
+              </CardHeader>
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-[#262626]">
+                    <TableHead>Interfaz</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>TX (Out)</TableHead>
+                    <TableHead>RX (In)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {deviceDetails?.interfaces?.map((iface: any) => (
+                    <TableRow key={iface.id} className="border-[#262626]">
+                      <TableCell className="font-bold text-gray-200">{iface.name}</TableCell>
+                      <TableCell>
+                        <Badge className={iface.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>
+                          {iface.status === 'up' ? 'ONLINE' : 'DOWN'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-purple-400">{iface.trafficOut.toFixed(2)} Mbps</TableCell>
+                      <TableCell className="font-mono text-xs text-blue-400">{iface.trafficIn.toFixed(2)} Mbps</TableCell>
+                    </TableRow>
+                  ))}
+                  {!deviceDetails?.interfaces?.length && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center py-8 text-gray-600">
+                        {selectedDevice.status === 'down' ? 'Dispositivo Offline' : 'Recuperando interfaces...'}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
