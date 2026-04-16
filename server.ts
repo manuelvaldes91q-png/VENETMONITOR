@@ -4,21 +4,97 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import axios from "axios";
-import admin from "firebase-admin";
 import cron from "node-cron";
 import FormData from "form-data";
-import { Readable } from "stream";
-
-// Initialize Firebase Admin
-// Note: In this environment, we assume the service account is available via environment or default credentials
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
-
-const db = admin.firestore();
+import Database from "better-sqlite3";
+import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialize SQLite Database
+const dbPath = path.join(__dirname, "database.sqlite");
+const db = new Database(dbPath);
+
+// Create Tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    type TEXT,
+    ip TEXT,
+    apiPort INTEGER,
+    username TEXT,
+    password TEXT,
+    mac TEXT,
+    status TEXT DEFAULT 'down',
+    lastSeen DATETIME,
+    telegramEnabled INTEGER DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deviceId TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    status TEXT,
+    latency REAL
+  );
+
+  CREATE TABLE IF NOT EXISTS provisioning (
+    id TEXT PRIMARY KEY,
+    ip TEXT,
+    mac TEXT,
+    deviceName TEXT,
+    dhcpLease INTEGER DEFAULT 1,
+    arpEnabled INTEGER DEFAULT 1,
+    speedLimit TEXT,
+    interfaceName TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS interfaces (
+    id TEXT PRIMARY KEY,
+    deviceId TEXT,
+    name TEXT,
+    status TEXT,
+    trafficIn REAL,
+    trafficOut REAL,
+    lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS backups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deviceId TEXT,
+    deviceName TEXT,
+    fileName TEXT,
+    size TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    location TEXT,
+    status TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS telegram_sessions (
+    chatId TEXT PRIMARY KEY,
+    step TEXT,
+    data TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// Helper to get/set settings
+const getSetting = (key: string) => {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as any;
+  return row ? JSON.parse(row.value) : null;
+};
+
+const setSetting = (key: string, value: any) => {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
+};
 
 async function startServer() {
   const app = express();
@@ -26,15 +102,94 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API Routes
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
+  // --- API Routes for Frontend ---
+
+  app.get("/api/health", (req, res) => res.json({ status: "ok", db: "sqlite" }));
+
+  // Devices
+  app.get("/api/devices", (req, res) => {
+    const rows = db.prepare("SELECT * FROM devices").all();
+    res.json(rows.map((r: any) => ({ ...r, telegramEnabled: !!r.telegramEnabled })));
+  });
+
+  app.post("/api/devices", (req, res) => {
+    const device = req.body;
+    const id = Math.random().toString(36).substring(7);
+    db.prepare(`
+      INSERT INTO devices (id, name, type, ip, apiPort, username, password, mac, telegramEnabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, device.name, device.type, device.ip, device.apiPort, device.username, device.password, device.mac, device.telegramEnabled ? 1 : 0);
+    res.json({ id, ...device });
+  });
+
+  app.delete("/api/devices/:id", (req, res) => {
+    db.prepare("DELETE FROM devices WHERE id = ?").run(req.params.id);
+    res.json({ success: true });
+  });
+
+  app.patch("/api/devices/:id", (req, res) => {
+    const { telegramEnabled, status } = req.body;
+    if (telegramEnabled !== undefined) {
+      db.prepare("UPDATE devices SET telegramEnabled = ? WHERE id = ?").run(telegramEnabled ? 1 : 0, req.params.id);
+    }
+    if (status !== undefined) {
+      db.prepare("UPDATE devices SET status = ? WHERE id = ?").run(status, req.params.id);
+    }
+    res.json({ success: true });
+  });
+
+  // Provisioning
+  app.get("/api/provisioning", (req, res) => {
+    const rows = db.prepare("SELECT * FROM provisioning ORDER BY createdAt DESC").all();
+    res.json(rows.map((r: any) => ({ ...r, arpEnabled: !!r.arpEnabled, dhcpLease: !!r.dhcpLease })));
+  });
+
+  app.post("/api/provisioning", (req, res) => {
+    const p = req.body;
+    const id = Math.random().toString(36).substring(7);
+    db.prepare(`
+      INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, p.ip, p.mac, p.deviceName, p.speedLimit, p.interfaceName);
+    res.json({ id, ...p });
+  });
+
+  app.patch("/api/provisioning/:id", (req, res) => {
+    const { arpEnabled } = req.body;
+    db.prepare("UPDATE provisioning SET arpEnabled = ? WHERE id = ?").run(arpEnabled ? 1 : 0, req.params.id);
+    res.json({ success: true });
+  });
+
+  // Logs
+  app.get("/api/logs", (req, res) => {
+    const rows = db.prepare("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 100").all();
+    res.json(rows);
+  });
+
+  // Settings
+  app.get("/api/settings", (req, res) => {
+    const global = getSetting("global") || {};
+    res.json(global);
+  });
+
+  app.post("/api/settings", (req, res) => {
+    setSetting("global", req.body);
+    res.json({ success: true });
+  });
+
+  // Oracle
+  app.get("/api/oracle", (req, res) => {
+    res.json(getSetting("oracle") || null);
+  });
+
+  app.post("/api/oracle", (req, res) => {
+    setSetting("oracle", req.body);
+    res.json({ success: true });
   });
 
   // Ping utility
   const pingHost = (host: string): Promise<{ alive: boolean; time: number }> => {
     return new Promise((resolve) => {
-      // Use ping command
       const ping = spawn("ping", ["-c", "1", "-W", "2", host]);
       let output = "";
       ping.stdout.on("data", (data) => (output += data.toString()));
@@ -63,15 +218,12 @@ async function startServer() {
   // Telegram Webhook Handler
   app.post("/api/telegram-webhook", async (req, res) => {
     const { message, callback_query } = req.body;
-    
-    // Get settings for token
-    const settingsSnap = await db.collection('settings').doc('global').get();
-    const settings = settingsSnap.data() || {};
+    const settings = getSetting("global") || {};
     const token = settings.telegramBotToken;
 
     if (!token) return res.sendStatus(200);
 
-    const sendTelegram = async (chatId: number, text: string, replyMarkup?: any) => {
+    const sendTelegram = async (chatId: string | number, text: string, replyMarkup?: any) => {
       await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
         chat_id: chatId,
         text,
@@ -80,7 +232,7 @@ async function startServer() {
       });
     };
 
-    const editMessage = async (chatId: number, messageId: number, text: string, replyMarkup?: any) => {
+    const editMessage = async (chatId: string | number, messageId: number, text: string, replyMarkup?: any) => {
       await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
         chat_id: chatId,
         message_id: messageId,
@@ -90,9 +242,8 @@ async function startServer() {
       });
     };
 
-    // Handle Commands
     if (message && message.text) {
-      const chatId = message.chat.id;
+      const chatId = message.chat.id.toString();
       const text = message.text;
 
       if (text === '/start' || text === '/menu') {
@@ -106,222 +257,44 @@ async function startServer() {
             [{ text: "🧠 Consultar Oráculo AI", callback_data: "oracle_status" }]
           ]
         };
-        await sendTelegram(chatId, "<b>🤖 Panel de Control MikroTik</b>\nSelecciona una opción para monitorear o gestionar tu red:", menuMarkup);
+        await sendTelegram(chatId, "<b>🤖 Panel de Control MikroTik (SQLite)</b>\nSelecciona una opción:", menuMarkup);
       } else {
-        // Handle Session-based input
-        const sessionSnap = await db.collection('telegram_sessions').doc(chatId.toString()).get();
-        if (sessionSnap.exists) {
-          const session = sessionSnap.data() || {};
-          const text = message.text.trim();
+        const sessionRow = db.prepare("SELECT * FROM telegram_sessions WHERE chatId = ?").get(chatId) as any;
+        if (sessionRow) {
+          const session = { ...sessionRow, data: JSON.parse(sessionRow.data) };
+          const input = text.trim();
 
           if (session.step === 'awaiting_ip') {
-            // Basic IP validation
-            if (!/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(text)) {
-              return await sendTelegram(chatId, "❌ IP inválida. Por favor, envía una IP correcta (ej: 192.168.88.50):");
-            }
-            await db.collection('telegram_sessions').doc(chatId.toString()).update({
-              step: 'awaiting_mac',
-              'data.ip': text
-            });
-            await sendTelegram(chatId, "✅ IP guardada. Ahora envía la <b>MAC Address</b> (ej: AA:BB:CC:DD:EE:FF):");
-          } 
-          else if (session.step === 'awaiting_mac') {
-            // Basic MAC validation
-            if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(text)) {
-              return await sendTelegram(chatId, "❌ MAC inválida. Por favor, envía una MAC correcta (ej: AA:BB:CC:DD:EE:FF):");
-            }
-            await db.collection('telegram_sessions').doc(chatId.toString()).update({
-              step: 'awaiting_name',
-              'data.mac': text.toUpperCase()
-            });
+            db.prepare("UPDATE telegram_sessions SET step = ?, data = ? WHERE chatId = ?")
+              .run('awaiting_mac', JSON.stringify({ ...session.data, ip: input }), chatId);
+            await sendTelegram(chatId, "✅ IP guardada. Ahora envía la <b>MAC Address</b>:");
+          } else if (session.step === 'awaiting_mac') {
+            db.prepare("UPDATE telegram_sessions SET step = ?, data = ? WHERE chatId = ?")
+              .run('awaiting_name', JSON.stringify({ ...session.data, mac: input.toUpperCase() }), chatId);
             await sendTelegram(chatId, "✅ MAC guardada. Finalmente, envía el <b>Nombre del Cliente</b>:");
-          }
-          else if (session.step === 'awaiting_name') {
-            const finalData = {
-              ...session.data,
-              deviceName: text,
-              dhcpLease: true,
-              arpEnabled: true,
-              speedLimit: '10M/10M',
-              interfaceName: 'SALIDA',
-              createdAt: admin.firestore.FieldValue.serverTimestamp()
-            };
-
-            await db.collection('provisioning').add(finalData);
-            await db.collection('telegram_sessions').doc(chatId.toString()).delete();
-
-            await sendTelegram(chatId, 
-              `<b>✅ ¡Cliente Provisionado con Éxito!</b>\n\n` +
-              `👤 <b>Nombre:</b> ${text}\n` +
-              `🌐 <b>IP:</b> ${finalData.ip}\n` +
-              `🆔 <b>MAC:</b> ${finalData.mac}\n` +
-              `🔌 <b>Interfaz:</b> SALIDA\n` +
-              `🚀 <b>Plan:</b> 10M/10M (Default)\n\n` +
-              `<i>DHCP y ARP han sido activados automáticamente en la interfaz SALIDA.</i>`
-            );
-            
-            // Show menu again
-            const menuMarkup = {
-              inline_keyboard: [
-                [{ text: "📊 Estado General", callback_data: "status_general" }],
-                [{ text: "👥 Gestión Clientes", callback_data: "manage_clients" }],
-                [{ text: "⬅️ Volver al Menú", callback_data: "main_menu" }]
-              ]
-            };
-            await sendTelegram(chatId, "¿Deseas hacer algo más?", menuMarkup);
+          } else if (session.step === 'awaiting_name') {
+            const id = Math.random().toString(36).substring(7);
+            db.prepare("INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName) VALUES (?, ?, ?, ?, ?, ?)")
+              .run(id, session.data.ip, session.data.mac, input, '10M/10M', 'SALIDA');
+            db.prepare("DELETE FROM telegram_sessions WHERE chatId = ?").run(chatId);
+            await sendTelegram(chatId, `<b>✅ ¡Cliente Provisionado!</b>\n👤 ${input}\n🌐 ${session.data.ip}`);
           }
         }
       }
     }
 
-    // Handle Callbacks
     if (callback_query) {
-      const chatId = callback_query.message.chat.id;
+      const chatId = callback_query.message.chat.id.toString();
       const messageId = callback_query.message.message_id;
       const data = callback_query.data;
 
-      if (data === "start_provisioning") {
-        await db.collection('telegram_sessions').doc(chatId.toString()).set({
-          step: 'awaiting_ip',
-          data: {},
-          timestamp: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        // Fetch mock dynamic leases to show as options
-        const mockLeases = [
-          { ip: '192.168.88.250', mac: 'BC:FE:D9:12:34:56', hostName: 'Android-Phone' },
-          { ip: '192.168.88.251', mac: 'E4:5F:01:98:76:54', hostName: 'Laptop-Dell' },
-          { ip: '192.168.88.252', mac: '00:11:22:33:44:55', hostName: 'Smart-TV' },
-        ];
-
-        const keyboard = mockLeases.map(l => ([{
-          text: `📍 ${l.ip} (${l.hostName})`,
-          callback_data: `select_lease_${l.ip}_${l.mac}`
-        }]));
-
-        keyboard.push([{ text: "⌨️ Ingresar Manualmente", callback_data: "manual_ip" }]);
-        keyboard.push([{ text: "⬅️ Cancelar", callback_data: "main_menu" }]);
-
-        await sendTelegram(chatId, "<b>🆕 Iniciando Aprovisionamiento</b>\n\nHe detectado estos dispositivos con IP dinámica. Selecciona uno para autocompletar o ingresa la IP manualmente:", { inline_keyboard: keyboard });
-      }
-
-      if (data.startsWith("select_lease_")) {
-        const parts = data.split("_");
-        const ip = parts[2];
-        const mac = parts[3];
-
-        await db.collection('telegram_sessions').doc(chatId.toString()).update({
-          step: 'awaiting_name',
-          'data.ip': ip,
-          'data.mac': mac
-        });
-
-        await sendTelegram(chatId, `✅ Seleccionado: <b>${ip}</b> (${mac})\n\nAhora envía el <b>Nombre del Cliente</b> para finalizar:`);
-      }
-
-      if (data === "manual_ip") {
-        await sendTelegram(chatId, "De acuerdo. Por favor, envía la <b>IP</b> que deseas asignar al cliente:");
-      }
-
-      if (data === "prov_summary") {
-        const provSnap = await db.collection('provisioning').get();
-        const provs = provSnap.docs.map(d => d.data());
-        const active = provs.filter(p => p.arpEnabled).length;
-        const cut = provs.filter(p => !p.arpEnabled).length;
-
-        const text = `<b>📝 Resumen de Aprovisionamiento</b>\n\n` +
-                     `✅ Clientes Activos: ${active}\n` +
-                     `🚫 Clientes Cortados: ${cut}\n` +
-                     `👥 Total Registrados: ${provs.length}\n\n` +
-                     `<i>Actualizado: ${new Date().toLocaleTimeString()}</i>`;
-        
-        const markup = {
-          inline_keyboard: [[{ text: "⬅️ Volver", callback_data: "main_menu" }]]
-        };
-        await editMessage(chatId, messageId, text, markup);
-      }
-
       if (data === "status_general") {
-        const devicesSnap = await db.collection('devices').get();
-        const devices = devicesSnap.docs.map(d => d.data());
+        const devices = db.prepare("SELECT status FROM devices").all() as any[];
         const up = devices.filter(d => d.status === 'up').length;
-        const down = devices.filter(d => d.status === 'down').length;
-
-        const text = `<b>📊 Resumen de Infraestructura</b>\n\n` +
-                     `✅ Online: ${up}\n` +
-                     `❌ Offline: ${down}\n` +
-                     `📦 Total: ${devices.length}\n\n` +
-                     `<i>Actualizado: ${new Date().toLocaleTimeString()}</i>`;
-        
-        const markup = {
-          inline_keyboard: [[{ text: "⬅️ Volver", callback_data: "main_menu" }]]
-        };
-        await editMessage(chatId, messageId, text, markup);
+        const text = `<b>📊 Resumen</b>\n✅ Online: ${up}\n❌ Offline: ${devices.length - up}`;
+        await editMessage(chatId, messageId, text, { inline_keyboard: [[{ text: "⬅️ Volver", callback_data: "main_menu" }]] });
       }
-
-      if (data === "status_antennas") {
-        const devicesSnap = await db.collection('devices').where('type', '==', 'antenna').get();
-        const antennas = devicesSnap.docs.map(d => d.data());
-        
-        let text = `<b>📡 Estado de Antenas</b>\n\n`;
-        antennas.forEach(a => {
-          text += `${a.status === 'up' ? '🟢' : '🔴'} ${a.name} (${a.ip})\n`;
-        });
-
-        const markup = {
-          inline_keyboard: [[{ text: "⬅️ Volver", callback_data: "main_menu" }]]
-        };
-        await editMessage(chatId, messageId, text, markup);
-      }
-
-      if (data === "manage_clients") {
-        const clientsSnap = await db.collection('provisioning').limit(5).get();
-        const clients = clientsSnap.docs.map(d => ({ id: d.id, ...d.data() as any }));
-
-        let text = `<b>👥 Gestión de Clientes (Aprovisionamiento)</b>\n\n`;
-        const keyboard = [];
-
-        clients.forEach(c => {
-          text += `${c.arpEnabled ? '✅' : '🚫'} <b>${c.deviceName}</b>\nIP: ${c.ip}\n\n`;
-          keyboard.push([{ 
-            text: `${c.arpEnabled ? '✂️ Cortar' : '🔌 Activar'} ${c.deviceName}`, 
-            callback_data: `toggle_client_${c.id}` 
-          }]);
-        });
-
-        keyboard.push([{ text: "⬅️ Volver", callback_data: "main_menu" }]);
-
-        await editMessage(chatId, messageId, text, { inline_keyboard: keyboard });
-      }
-
-      if (data.startsWith("toggle_client_")) {
-        const clientId = data.replace("toggle_client_", "");
-        const clientRef = db.collection('provisioning').doc(clientId);
-        const clientSnap = await clientRef.get();
-        
-        if (clientSnap.exists) {
-          const current = clientSnap.data()?.arpEnabled;
-          await clientRef.update({ arpEnabled: !current });
-          
-          // Re-trigger client list
-          const clientsSnap = await db.collection('provisioning').limit(5).get();
-          const clients = clientsSnap.docs.map(d => ({ id: d.id, ...d.data() as any }));
-
-          let text = `<b>👥 Gestión de Clientes (Actualizado)</b>\n\n`;
-          const keyboard = [];
-          clients.forEach(c => {
-            text += `${c.arpEnabled ? '✅' : '🚫'} <b>${c.deviceName}</b>\nIP: ${c.ip}\n\n`;
-            keyboard.push([{ 
-              text: `${c.arpEnabled ? '✂️ Cortar' : '🔌 Activar'} ${c.deviceName}`, 
-              callback_data: `toggle_client_${c.id}` 
-            }]);
-          });
-          keyboard.push([{ text: "⬅️ Volver", callback_data: "main_menu" }]);
-          
-          await editMessage(chatId, messageId, text, { inline_keyboard: keyboard });
-        }
-      }
-
+      
       if (data === "main_menu") {
         const menuMarkup = {
           inline_keyboard: [
@@ -333,260 +306,56 @@ async function startServer() {
             [{ text: "🧠 Consultar Oráculo AI", callback_data: "oracle_status" }]
           ]
         };
-        await editMessage(chatId, messageId, "<b>🤖 Panel de Control MikroTik</b>\nSelecciona una opción para monitorear o gestionar tu red:", menuMarkup);
-      }
-
-      if (data === "oracle_status") {
-        const oracleSnap = await db.collection('settings').doc('oracle').get();
-        const oracle = oracleSnap.data();
-
-        if (!oracle) {
-          return await sendTelegram(chatId, "⚠️ El Oráculo aún está procesando datos. Por favor, abre la WebApp para iniciar el núcleo neuronal.");
-        }
-
-        const text = `<b>🧠 REPORTE DEL ORÁCULO NEURONAL</b>\n` +
-                     `--------------------------------\n` +
-                     `<b>Estado:</b> ${oracle.statusSummary}\n\n` +
-                     `<b>Análisis:</b> ${oracle.intelligence}\n\n` +
-                     `<b>Recomendación:</b> ${oracle.recommendation}\n\n` +
-                     `<b>Pulso Vital:</b> ${oracle.pulseIntensity}/10\n` +
-                     `--------------------------------\n` +
-                     `<i>Actualizado: ${oracle.updatedAt?.toDate().toLocaleTimeString()}</i>`;
-        
-        const markup = {
-          inline_keyboard: [[{ text: "⬅️ Volver", callback_data: "main_menu" }]]
-        };
-        await editMessage(chatId, messageId, text, markup);
+        await editMessage(chatId, messageId, "<b>🤖 Panel de Control MikroTik</b>", menuMarkup);
       }
     }
 
     res.sendStatus(200);
   });
 
-  // Telegram Proxy
-  app.post("/api/notify", async (req, res) => {
-    const { token, chatId, message } = req.body;
-    if (!token || !chatId || !message) return res.status(400).json({ error: "Missing parameters" });
-    
-    try {
-      const url = `https://api.telegram.org/bot${token}/sendMessage`;
-      await axios.post(url, {
-        chat_id: chatId,
-        text: message,
-        parse_mode: 'HTML'
-      });
-      res.json({ success: true });
-    } catch (err) {
-      console.error("Telegram error:", err);
-      res.status(500).json({ error: "Failed to send notification" });
-    }
-  });
-
-  // Maintenance Tools (Ping/Traceroute from Router)
-  app.post("/api/maintenance/run", async (req, res) => {
-    // ... existing code ...
-  });
-
-  // Mock Dynamic Leases (Simulating MikroTik DHCP Leases)
-  app.get("/api/mikrotik/dynamic-leases", async (req, res) => {
-    // Returning empty array to start from scratch as requested
-    res.json([]);
-  });
-
-  // Backup System
-  const runBackup = async (deviceId?: string) => {
-    console.log(`Starting backup process${deviceId ? ` for device ${deviceId}` : ' for all devices'}...`);
-    
-    const settingsSnap = await db.collection('settings').doc('global').get();
-    const settings = settingsSnap.data() || {};
-    const { telegramBotToken, telegramChatId } = settings;
-
-    let devicesToBackup = [];
-    if (deviceId) {
-      const d = await db.collection('devices').doc(deviceId).get();
-      if (d.exists) devicesToBackup.push({ id: d.id, ...d.data() as any });
-    } else {
-      const snap = await db.collection('devices').where('type', '==', 'router').get();
-      devicesToBackup = snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
-    }
-
-    for (const device of devicesToBackup) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const fileName = `backup_${device.name}_${timestamp}.backup`;
-      
-      console.log(`[BACKUP] Processing ${device.name}...`);
-
-      // 1. Simulate MikroTik Backup Creation
-      // In reality: /system backup save name=...
-      
-      // 2. Simulate Saving to VPS
-      // We'll store a record in Firestore representing the file on the VPS
-      const backupRecord = {
-        deviceId: device.id,
-        deviceName: device.name,
-        fileName,
-        size: "1.2MB", // Mock size
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-        location: 'VPS Storage /backups/',
-        status: 'success'
-      };
-      
-      await db.collection('backups').add(backupRecord);
-
-      // 3. Send to Telegram
-      if (telegramBotToken && telegramChatId) {
-        const caption = `<b>💠 NÚCLEO DE RESPALDO ACTIVADO</b>\n` +
-                       `<code>══════════════════════════════</code>\n` +
-                       `<b>📡 ORIGEN:</b> <code>${device.name.toUpperCase()}</code>\n` +
-                       `<b>📦 ARCHIVO:</b> <code>${fileName}</code>\n` +
-                       `<b>💾 VPS CLOUD:</b> <pre>REPLICADO ✅</pre>\n` +
-                       `<b>⏰ TIMESTAMP:</b> <code>${new Date().toLocaleString()}</code>\n` +
-                       `<code>══════════════════════════════</code>\n` +
-                       `<i>Resguardo neuronal completado con éxito.</i>`;
-
-        try {
-          const mockContent = `MikroTik Backup File\nDevice: ${device.name}\nDate: ${new Date().toISOString()}\nConfig: ...`;
-          const buffer = Buffer.from(mockContent);
-          
-          const form = new FormData();
-          form.append('chat_id', telegramChatId);
-          form.append('caption', caption);
-          form.append('parse_mode', 'HTML');
-          form.append('reply_markup', JSON.stringify({
-            inline_keyboard: [
-              [
-                { text: "📊 Ver Estado", callback_data: "main_status" },
-                { text: "🧠 Oráculo AI", callback_data: "oracle_status" }
-              ]
-            ]
-          }));
-          form.append('document', buffer, {
-            filename: fileName,
-            contentType: 'application/octet-stream',
-          });
-
-          await axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendDocument`, form, {
-            headers: form.getHeaders()
-          });
-          
-          console.log(`[BACKUP] File sent to Telegram for ${device.name}`);
-        } catch (tgErr) {
-          console.error("Error sending backup file to Telegram:", tgErr);
-        }
-      }
-    }
-  };
-
-  app.post("/api/maintenance/backup", async (req, res) => {
-    const { deviceId } = req.body;
-    try {
-      await runBackup(deviceId);
-      res.json({ success: true, message: "Backup process initiated" });
-    } catch (err) {
-      res.status(500).json({ error: "Backup failed" });
-    }
-  });
-
-  // Weekly Backup Cron (Every Sunday at 3:00 AM)
-  cron.schedule('0 3 * * 0', () => {
-    console.log("Running scheduled weekly backup...");
-    runBackup();
-  });
-
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
-  // Background Monitoring Loop
+  // Monitoring Loop
   const monitorDevices = async () => {
     try {
-      // Get settings
-      const settingsSnap = await db.collection('settings').doc('global').get();
-      const settings = settingsSnap.data() || {};
+      const settings = getSetting("global") || {};
       const { telegramBotToken, telegramChatId } = settings;
-
-      // Get all devices (routers, vps, antennas)
-      const devicesSnap = await db.collection('devices').get();
-      const devices = devicesSnap.docs.map(d => ({ id: d.id, ...d.data() as any }));
+      const devices = db.prepare("SELECT * FROM devices").all() as any[];
 
       for (const device of devices) {
         const result = await pingHost(device.ip);
         const newStatus = result.alive ? 'up' : 'down';
 
-        // Only act if status changed
         if (device.status !== newStatus) {
-          console.log(`Status change for ${device.name}: ${device.status} -> ${newStatus}`);
-          
-          // Update device status in Firestore
-          await db.collection('devices').doc(device.id).update({
-            status: newStatus,
-            lastSeen: admin.firestore.FieldValue.serverTimestamp()
-          });
+          db.prepare("UPDATE devices SET status = ?, lastSeen = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, device.id);
+          db.prepare("INSERT INTO logs (deviceId, status, latency) VALUES (?, ?, ?)").run(device.id, newStatus, result.alive ? result.time : 0);
 
-          // Add log entry
-          await db.collection('logs').add({
-            deviceId: device.id,
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            status: newStatus,
-            latency: result.alive ? result.time : 0
-          });
-
-          // Send Telegram Notification
           if (device.telegramEnabled && telegramBotToken && telegramChatId) {
-            const statusText = newStatus === 'up' ? 'SISTEMA ONLINE' : 'SISTEMA OFFLINE';
-            const statusColor = newStatus === 'up' ? '🟢' : '🔴';
-            
-            const message = `<b>🚨 ALERTA DE RED: ${statusText}</b>\n` +
-                           `<code>══════════════════════════════</code>\n` +
-                           `<b>📡 DISPOSITIVO:</b> <code>${device.name.toUpperCase()}</code>\n` +
-                           `<b>🌐 DIRECCIÓN:</b> <code>${device.ip}</code>\n` +
-                           `<b>📊 ESTADO:</b> <code>${newStatus.toUpperCase()} ${statusColor}</code>\n` +
-                           `<b>⏰ EVENTO:</b> <code>${new Date().toLocaleString()}</code>\n` +
-                           `<code>══════════════════════════════</code>\n` +
-                           `<i>El Oráculo AI está analizando el impacto...</i>`;
-
-            try {
-              await axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
-                chat_id: telegramChatId,
-                text: message,
-                parse_mode: 'HTML',
-                reply_markup: {
-                  inline_keyboard: [
-                    [
-                      { text: "🧠 Consultar Oráculo", callback_data: "oracle_status" },
-                      { text: "📊 Ver Estado", callback_data: "main_status" }
-                    ]
-                  ]
-                }
-              });
-            } catch (tgErr) {
-              console.error("Error sending Telegram alert:", tgErr);
-            }
+            const message = `<b>🚨 ALERTA: ${device.name}</b>\nEstado: ${newStatus.toUpperCase()}`;
+            await axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+              chat_id: telegramChatId,
+              text: message,
+              parse_mode: 'HTML'
+            }).catch(e => console.error("TG Error", e.message));
           }
         }
       }
     } catch (err) {
-      console.error("Monitoring loop error:", err);
+      console.error("Monitor error", err);
     }
   };
 
-  // Start monitoring every 120 seconds (Eco-mode for VPS limits)
   setInterval(monitorDevices, 120000);
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // Vite setup
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
+  }
+
+  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT} (SQLite Mode)`));
 }
 
 startServer();

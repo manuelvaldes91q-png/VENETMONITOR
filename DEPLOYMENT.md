@@ -1,6 +1,6 @@
-# 🚀 Guía de Instalación en Google Cloud VPS
+# 🚀 Guía de Instalación en Google Cloud VPS (Modo Local SQLite)
 
-Esta guía te ayudará a instalar el **MikroTik Monitor & AI Oracle** en tu VPS de Google Cloud.
+Esta guía te ayudará a instalar el **VENET MONITOR** en tu VPS de Google Cloud usando una base de datos local, sin necesidad de Firebase.
 
 ## 1. Requisitos Previos
 
@@ -14,23 +14,26 @@ sudo apt update && sudo apt upgrade -y
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
+# Instalar herramientas de compilación (necesarias para SQLite)
+sudo apt-get install -y build-essential python3
+
 # Instalar PM2 para mantener la app corriendo 24/7
 sudo npm install -g pm2
 ```
 
 ## 2. Preparar el Proyecto
 
-1. **Sube los archivos** a tu VPS usando SCP, SFTP o Git.
-2. **Entra a la carpeta** del proyecto:
+1. **Clona tu repositorio** o sube los archivos:
    ```bash
-   cd /ruta/de/tu/proyecto
+   git clone https://github.com/tu-usuario/VENETMONITOR.git
+   cd VENETMONITOR
    ```
-3. **Instala las dependencias**:
+2. **Instala las dependencias**:
    ```bash
    npm install
    ```
 
-## 3. Configuración de Variables de Entorno
+## 3. Configuración de Variables de Env
 
 Crea un archivo `.env` en la raíz del proyecto:
 
@@ -38,16 +41,11 @@ Crea un archivo `.env` en la raíz del proyecto:
 nano .env
 ```
 
-Pega y completa los siguientes datos:
+Pega lo siguiente:
 
 ```env
 # Puerto de la aplicación
 PORT=3000
-
-# Configuración de Firebase (Copia esto de tu consola de Firebase)
-FIREBASE_PROJECT_ID=tu-proyecto-id
-FIREBASE_CLIENT_EMAIL=tu-email-de-servicio@...
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 
 # API Key de Gemini (Google AI)
 GEMINI_API_KEY=tu_api_key_aqui
@@ -65,10 +63,10 @@ APP_URL=http://tu_ip_publica:3000
 
 2. **Inicia el Servidor con PM2**:
    ```bash
-   pm2 start server.ts --interpreter tsx --name "mikrotik-monitor"
+   pm2 start server.ts --interpreter tsx --name "venet-monitor"
    ```
 
-3. **Configura PM2 para que inicie al reiniciar el VPS**:
+3. **Configura PM2 para el reinicio**:
    ```bash
    pm2 startup
    pm2 save
@@ -76,22 +74,17 @@ APP_URL=http://tu_ip_publica:3000
 
 ## 5. Configuración del Firewall en Google Cloud
 
-Para que puedas acceder a la web y que Telegram pueda enviar mensajes, debes abrir el puerto **3000**:
+**IMPORTANTE:** Debes abrir el puerto **3000** en la consola de Google Cloud:
+1. Ve a **VPC Network** -> **Firewall**.
+2. Crea una regla llamada `allow-venet`.
+3. Source IP: `0.0.0.0/0`.
+4. Protocols/Ports: **TCP 3000**.
 
-1. Ve a la consola de Google Cloud -> **VPC Network** -> **Firewall**.
-2. Haz clic en **Create Firewall Rule**.
-3. Nombre: `allow-mikrotik-monitor`.
-4. Targets: **All instances in the network**.
-5. Source IP ranges: `0.0.0.0/0`.
-6. Protocols and ports: Selecciona **TCP** y escribe `3000`.
-7. Haz clic en **Create**.
+## 6. Acceso al Sistema
 
-## 6. Configuración Final del Bot
-
-1. Abre tu aplicación en el navegador: `http://tu_ip_vps:3000`.
-2. Ve a la pestaña **Configuración**.
-3. Ingresa tu **Bot Token** y **Chat ID**.
-4. Haz clic en **"Configurar Webhook Automáticamente"**.
+1. Abre `http://tu_ip_vps:3000` en tu navegador.
+2. La contraseña por defecto es: `admin123`.
+3. Ve a **Configuración** para poner tu Token de Telegram.
 
 ---
-**¡Listo!** Tu sistema ahora está vigilando tu red MikroTik desde la nube de Google de forma eficiente.
+**¡Listo!** Tu sistema ahora es 100% independiente y corre localmente en tu VPS.
