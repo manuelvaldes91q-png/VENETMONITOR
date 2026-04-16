@@ -445,12 +445,48 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
                 <Input className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewDevice({...newDevice, ip: e.target.value})} />
               </div>
               {mode === 'mikrotik' && (
-                <div className="space-y-2">
-                  <Label>Tipo</Label>
-                  <select className="w-full bg-[#1a1a1a] border-[#262626] rounded-md p-2" onChange={e => setNewDevice({...newDevice, type: e.target.value as any})}>
-                    <option value="router">MikroTik Router</option>
-                    <option value="vps">Servidor VPS</option>
-                  </select>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Tipo</Label>
+                    <select 
+                      className="w-full bg-[#1a1a1a] border-[#262626] rounded-md p-2 text-sm text-white" 
+                      onChange={e => setNewDevice({...newDevice, type: e.target.value as any})}
+                    >
+                      <option value="router">MikroTik Router (API)</option>
+                      <option value="vps">Servidor VPS (Ping)</option>
+                    </select>
+                  </div>
+                  
+                  {newDevice.type === 'router' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Puerto API</Label>
+                        <Input 
+                          type="number" 
+                          placeholder="8728" 
+                          className="bg-[#1a1a1a] border-[#262626]" 
+                          onChange={e => setNewDevice({...newDevice, apiPort: parseInt(e.target.value)})} 
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Usuario</Label>
+                        <Input 
+                          placeholder="admin" 
+                          className="bg-[#1a1a1a] border-[#262626]" 
+                          onChange={e => setNewDevice({...newDevice, username: e.target.value})} 
+                        />
+                      </div>
+                      <div className="space-y-2 col-span-2">
+                        <Label>Contraseña</Label>
+                        <Input 
+                          type="password" 
+                          placeholder="••••••••" 
+                          className="bg-[#1a1a1a] border-[#262626]" 
+                          onChange={e => setNewDevice({...newDevice, password: e.target.value})} 
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-2">
@@ -527,11 +563,32 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
           <DialogContent className="bg-[#111] border-[#262626] text-white">
             <DialogHeader><DialogTitle>Aprovisionar Cliente</DialogTitle></DialogHeader>
             <div className="space-y-4 py-4">
-              <Input placeholder="Nombre del Cliente" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, deviceName: e.target.value})} />
-              <Input placeholder="IP Address" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, ip: e.target.value})} />
-              <Input placeholder="MAC Address" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, mac: e.target.value})} />
+              <div className="space-y-2">
+                <Label>Nombre del Cliente (DHCP/ARP/Queue)</Label>
+                <Input placeholder="Ej: Juan Perez" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, deviceName: e.target.value})} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>IP Address</Label>
+                  <Input placeholder="192.168.88.50" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, ip: e.target.value})} />
+                </div>
+                <div className="space-y-2">
+                  <Label>MAC Address</Label>
+                  <Input placeholder="AA:BB:CC..." className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, mac: e.target.value})} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Límite Velocidad (Queues)</Label>
+                  <Input placeholder="5M/5M" className="bg-[#1a1a1a] border-[#262626]" defaultValue="10M/10M" onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Interfaz MikroTik</Label>
+                  <Input placeholder="bridge-local" className="bg-[#1a1a1a] border-[#262626]" defaultValue="SALIDA" onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} />
+                </div>
+              </div>
             </div>
-            <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Activar Cliente</Button></DialogFooter>
+            <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Vincular y Activar</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </header>
