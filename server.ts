@@ -21,8 +21,10 @@ const db = new Database(dbPath);
 // Store for calculating traffic rates (Mbps)
 const lastBytesStore: Map<string, { rx: number; tx: number; time: number }> = new Map();
 
-// Create Tables
+// Create / Reset Tables (Forced clean start for update)
 db.exec(`
+  DROP TABLE IF EXISTS provisioning;
+
   CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -926,7 +928,7 @@ async function startServer() {
     }
   };
 
-  setInterval(monitorDevices, 60000); 
+  setInterval(monitorDevices, 120000); // 2 minutes for VPS stability
   monitorDevices(); // Initial run on startup
 
   // Vite setup
