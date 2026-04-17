@@ -859,14 +859,17 @@ async function startServer() {
           const latency = googlePing[0]?.time ? parseFloat(googlePing[0].time) * 1000 : 0;
           if (latency > 0) {
             const current = getSetting("global") || {};
-            setSetting("global", { ...current, googleLatency: Math.round(latency) });
+            setSetting("global", { ...current, googleLatency: Math.round(latency), googleLatSource: primary.name });
+            console.log(`DNS Check: Latency ${latency}ms verified from MikroTik: ${primary.name}`);
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error(`DNS Check Error (MikroTik ${primary.name}):`, e instanceof Error ? e.message : String(e));
+        }
       } else {
         // Fallback to local ping if no routers are up
         const res = await pingHost("8.8.8.8");
         const current = getSetting("global") || {};
-        setSetting("global", { ...current, googleLatency: Math.round(res.time) });
+        setSetting("global", { ...current, googleLatency: Math.round(res.time), googleLatSource: "VPS (Fallback)" });
       }
 
       console.log(`Monitor: Cycle finished at ${new Date().toISOString()}`);
@@ -875,7 +878,8 @@ async function startServer() {
     }
   };
 
-  setInterval(monitorDevices, 120000); // 2 minutes monitoring as a balance for 1GB VPS limit
+  setInterval(monitorDevices, 120000); 
+  monitorDevices(); // Initial run on startup
 
   // Vite setup
   if (process.env.NODE_ENV !== "production") {

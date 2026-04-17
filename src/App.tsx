@@ -427,7 +427,7 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
           </div>
           <div className="flex items-center gap-2 px-1">
             <div className={`w-2 h-2 rounded-full ${globalStats?.googleLatency ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-red-500 animate-pulse'}`} />
-            <span className="text-[10px] text-zinc-400 font-medium">Google DNS</span>
+            <span className="text-[10px] text-zinc-400 font-medium">Google DNS ({globalStats?.googleLatSource || 'MikroTik'})</span>
           </div>
         </div>
       </header>
@@ -1302,14 +1302,21 @@ function LogsView({ logs, devices }: any) {
         <Table>
           <TableHeader><TableRow className="border-[#262626]"><TableHead>Fecha</TableHead><TableHead>Dispositivo</TableHead><TableHead>Evento</TableHead><TableHead>Latencia</TableHead></TableRow></TableHeader>
           <TableBody>
-            {logs.map((l: any) => (
-              <TableRow key={l.id} className="border-[#262626]">
-                <TableCell className="text-xs text-gray-500">{new Date(l.timestamp).toLocaleString()}</TableCell>
-                <TableCell className="text-white">{devices.find((d: any) => d.id === l.deviceId)?.name || 'Desconocido'}</TableCell>
-                <TableCell><Badge className={l.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>{l.status.toUpperCase()}</Badge></TableCell>
-                <TableCell className="font-mono text-xs text-gray-400">{l.latency}ms</TableCell>
-              </TableRow>
-            ))}
+            {logs.map((l: any) => {
+              const device = devices.find((d: any) => d.id === l.deviceId);
+              // Format correctly to ensure browser treats SQLite timestamp as UTC
+              const dateStr = l.timestamp.includes('T') ? l.timestamp : l.timestamp.replace(' ', 'T') + (l.timestamp.endsWith('Z') ? '' : 'Z');
+              const localTime = new Date(dateStr).toLocaleString();
+              
+              return (
+                <TableRow key={l.id} className="border-[#262626]">
+                  <TableCell className="text-xs text-gray-500">{localTime}</TableCell>
+                  <TableCell className="text-white">{device?.name || 'Sincronizador'}</TableCell>
+                  <TableCell><Badge className={l.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>{l.status.toUpperCase()}</Badge></TableCell>
+                  <TableCell className="font-mono text-xs text-gray-400">{l.latency}ms</TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </Card>
