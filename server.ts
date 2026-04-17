@@ -411,22 +411,17 @@ async function startServer() {
           const matchingArp = arps.find(a => a.address === ip);
           const arpEnabled = (matchingArp && String(matchingArp.disabled) === 'false') ? 1 : 0;
 
-          // Sync to DB logic (Atomic update/insert based on multiple keys to avoid collisions)
+          // Sync to DB logic (Forceful replace for auto-sync)
           try {
             const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ? AND routerId = ?").get(mac, device.id) as any;
-            if (!existing) {
-              const id = Math.random().toString(36).substring(7);
-              db.prepare(`
-                INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-              `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
-            } else {
-              db.prepare(`
-                UPDATE provisioning 
-                SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-                WHERE id = ?
-              `).run(ip, finalName, speedLimit, arpEnabled, existing.id);
-            }
+            const id = existing?.id || Math.random().toString(36).substring(7);
+            
+            db.prepare(`
+              INSERT OR REPLACE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
+            
+            console.log(`[Manual Sync] ${finalName} (${ip}) synchronized successfully.`);
           } catch (dbErr: any) {
             console.error(`[Manual Sync] DB Error for ${ip}:`, dbErr.message);
           }
@@ -843,20 +838,13 @@ async function startServer() {
               const syncTransaction = db.transaction((items) => {
                 for (const item of items) {
                   try {
-                    const existing = db.prepare("SELECT id FROM provisioning WHERE (mac = ? OR ip = ?) AND routerId = ?").get(item.mac, item.ip, device.id) as any;
-                    if (!existing) {
-                      const id = Math.random().toString(36).substring(7);
-                      db.prepare(`
-                        INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                      `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
-                    } else {
-                      db.prepare(`
-                        UPDATE provisioning 
-                        SET ip = ?, mac = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                      `).run(item.ip, item.mac, item.finalName, item.speedLimit, item.arpEnabled, existing.id);
-                    }
+                    const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ? AND routerId = ?").get(item.mac, device.id) as any;
+                    const id = existing?.id || Math.random().toString(36).substring(7);
+                    
+                    db.prepare(`
+                      INSERT OR REPLACE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
                   } catch (itemErr) {
                     // Fail silently for single item
                   }

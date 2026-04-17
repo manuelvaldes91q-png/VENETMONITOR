@@ -1158,8 +1158,14 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
               <TableBody>
                 {leases.map((l, idx) => {
                   const isDynamic = l.dynamic === 'true';
-                  const isProvisioned = provisioning.some((p: any) => p.ip === l.address || p.mac === l.mac_address);
-                  const prov = provisioning.find((p: any) => p.ip === l.address || p.mac === l.mac_address);
+                  const isProvisioned = provisioning.some((p: any) => 
+                    (p.ip === l.address) || 
+                    (p.mac && l.mac_address && p.mac.toLowerCase() === l.mac_address.toLowerCase())
+                  );
+                  const prov = provisioning.find((p: any) => 
+                    (p.ip === l.address) || 
+                    (p.mac && l.mac_address && p.mac.toLowerCase() === l.mac_address.toLowerCase())
+                  );
                   
                   return (
                     <TableRow key={idx} className="border-[#262626] hover:bg-zinc-900/50">
