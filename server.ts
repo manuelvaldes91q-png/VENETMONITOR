@@ -249,12 +249,47 @@ async function startServer() {
         user: device.username,
         password: device.password,
         port: device.apiPort || 8728,
-        timeout: 10
+        timeout: 20
       });
       await api.connect();
+      
       const leases = await api.write('/ip/dhcp-server/lease/print');
+      const queues = await api.write('/queue/simple/print');
+      const arps = await api.write('/ip/arp/print');
       api.close();
-      res.json(leases);
+
+      // Enriched data for the UI and DB Update
+      const enrichedLeases = leases.map(lease => {
+        const ip = lease.address;
+        const mac = lease.mac_address;
+        const name = lease.comment || lease['host-name'] || `Client ${ip}`;
+        
+        const matchingQueue = queues.find(q => q.target && q.target.includes(ip));
+        const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
+        
+        const matchingArp = arps.find(a => a.address === ip);
+        const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+
+        // Sync to DB in background
+        const existing = db.prepare("SELECT * FROM provisioning WHERE mac = ?").get(mac);
+        if (!existing) {
+          const id = Math.random().toString(36).substring(7);
+          db.prepare(`
+            INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName, arpEnabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(id, ip, mac, name, speedLimit, 'SALIDA', arpEnabled);
+        } else {
+          db.prepare(`
+            UPDATE provisioning 
+            SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?
+            WHERE mac = ?
+          `).run(ip, name, speedLimit, arpEnabled, mac);
+        }
+
+        return { ...lease, speedLimit, arpEnabled, comment: name };
+      });
+
+      res.json(enrichedLeases);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -597,7 +632,7 @@ async function startServer() {
           routersForDnsCheck.push(device);
         }
 
-        // --- DHCP AUTO-SYNC ---
+        // --- MASTER AUTO-SYNC (Leases, Queues, ARP) ---
         if (device.type === 'router' && result.alive && device.username && device.password) {
           try {
             const api = new RouterOSAPI({
@@ -605,30 +640,53 @@ async function startServer() {
               user: device.username,
               password: device.password,
               port: device.apiPort || 8728,
-              timeout: 10
+              timeout: 15
             });
             await api.connect();
+            
+            // Fetch everything we need for a full sync
             const leases = await api.write('/ip/dhcp-server/lease/print');
+            const queues = await api.write('/queue/simple/print');
+            const arps = await api.write('/ip/arp/print');
             
             for (const lease of leases) {
               const mac = lease.mac_address;
               const ip = lease.address;
+              
+              // 1. Determine Name (Priority: Lease Comment > Hostname > Default)
               const name = lease.comment || lease['host-name'] || `Client ${ip}`;
               
+              // 2. Find Speed Limit from Simple Queues
+              const matchingQueue = queues.find(q => q.target && q.target.includes(ip));
+              const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
+              
+              // 3. Determine ARP Status (Enabled/Cut)
+              // We assume 'Cut' if there's no active/enabled ARP entry for this IP/MAC combo
+              // or if the entry is explicitly disabled (Mikrotik property 'disabled')
+              const matchingArp = arps.find(a => a.address === ip);
+              const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+              
               const existing = db.prepare("SELECT * FROM provisioning WHERE mac = ?").get(mac);
+              
               if (!existing) {
                 const id = Math.random().toString(36).substring(7);
                 db.prepare(`
                   INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName, arpEnabled)
                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                `).run(id, ip, mac, name, '10M/10M', 'SALIDA', 1);
+                `).run(id, ip, mac, name, speedLimit, 'SALIDA', arpEnabled);
               } else {
-                // Keep IP updated if it changed
-                db.prepare("UPDATE provisioning SET ip = ? WHERE mac = ? AND ip != ?").run(ip, mac, ip);
+                // Update existing record with Mikrotik's truth
+                db.prepare(`
+                  UPDATE provisioning 
+                  SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?
+                  WHERE mac = ?
+                `).run(ip, name, speedLimit, arpEnabled, mac);
               }
             }
             api.close();
-          } catch (e) {}
+          } catch (e) {
+            console.error(`Master Sync Error (${device.name}):`, e.message);
+          }
         }
 
         // Fetch Stats if it's a router and online

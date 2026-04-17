@@ -960,11 +960,12 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   const importLease = async (lease: any) => {
     try {
       await axios.post('/api/provisioning', {
-        deviceName: lease.comment || `Lease ${lease.address}`,
+        deviceName: lease.comment || lease['host-name'] || `Lease ${lease.address}`,
         ip: lease.address,
         mac: lease.mac_address,
-        speedLimit: '10M/10M',
-        interfaceName: 'SALIDA'
+        speedLimit: lease.speedLimit || '10M/10M',
+        interfaceName: 'SALIDA',
+        arpEnabled: lease.arpEnabled !== undefined ? lease.arpEnabled : 1
       });
       onRefresh();
       toast.success(`Importado: ${lease.address}`);
@@ -1063,9 +1064,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
             <Table>
               <TableHeader>
                 <TableRow className="border-[#262626] bg-[#0d0d0d]">
-                  <TableHead className="text-[10px]">Address</TableHead>
-                  <TableHead className="text-[10px]">MAC / Host</TableHead>
-                  <TableHead className="text-[10px]">Status</TableHead>
+                  <TableHead className="text-[10px]">Cliente / IP</TableHead>
+                  <TableHead className="text-[10px]">MAC / Plan</TableHead>
+                  <TableHead className="text-[10px]">Estado Sync</TableHead>
                   <TableHead className="text-right text-[10px]">Acción</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1073,21 +1074,28 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                 {leases.map((l, idx) => {
                   const isDynamic = l.dynamic === 'true';
                   const isProvisioned = provisioning.some((p: any) => p.ip === l.address || p.mac === l.mac_address);
+                  const prov = provisioning.find((p: any) => p.ip === l.address || p.mac === l.mac_address);
+                  
                   return (
                     <TableRow key={idx} className="border-[#262626] hover:bg-zinc-900/50">
-                      <TableCell className="font-mono text-xs text-white">{l.address}</TableCell>
+                      <TableCell className="font-mono text-xs text-white">
+                        <span className="text-blue-400 font-bold block">{l.comment}</span>
+                        {l.address}
+                      </TableCell>
                       <TableCell className="text-[10px] text-zinc-500">
                         {l.mac_address}<br/>
-                        <span className="text-zinc-600">[{l['host-name'] || 'S/N'}]</span>
+                        <span className="text-purple-400 font-mono">[{l.speedLimit}]</span>
                       </TableCell>
                       <TableCell>
-                        <div className="flex gap-1">
+                        <div className="flex flex-wrap gap-1">
                           {isDynamic ? (
                             <Badge variant="outline" className="text-[8px] border-yellow-500/50 text-yellow-500">DINÁMICA</Badge>
                           ) : (
                             <Badge variant="outline" className="text-[8px] border-green-500/50 text-green-500">ESTÁTICA</Badge>
                           )}
-                          {!isProvisioned && <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-500">NUEVO</Badge>}
+                          {!isProvisioned && <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-500">NO VINCULADO</Badge>}
+                          {l.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO (ARP)</Badge>}
+                          {l.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-green-500/20 text-green-500/70">ACTIVO</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
