@@ -1005,6 +1005,12 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
 
   // Trigger auto-refresh for leases if a router is selected
   useEffect(() => {
+    if (routers.length > 0 && !selectedRouterId) {
+      setSelectedRouterId(routers[0].id);
+    }
+  }, [routers, selectedRouterId]);
+
+  useEffect(() => {
     if (selectedRouterId) {
       fetchLeases(selectedRouterId);
       const inv = setInterval(() => fetchLeases(selectedRouterId), 60000);
@@ -1204,12 +1210,14 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
           <TableBody>
             {uniqueProvisioning.map((p: Provisioning) => (
               <TableRow key={p.id} className="border-[#262626] group hover:bg-[#161616] transition-colors">
-                <TableCell className="font-medium text-white px-4 py-3">
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-white uppercase tracking-tight">{p.deviceName}</span>
-                    <span className="text-[9px] text-zinc-500 uppercase tracking-tighter">Visto: {p.lastSeen ? new Date(p.lastSeen.replace(' ', 'T') + 'Z').toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' }) : '---'}</span>
-                  </div>
-                </TableCell>
+        <TableCell className="font-medium text-white px-4 py-3">
+          <div className="flex flex-col">
+            <span className="text-sm font-bold text-white uppercase tracking-tight">{p.deviceName}</span>
+            <span className="text-[9px] text-zinc-500 uppercase tracking-tighter">
+              Visto: {p.lastSeen ? new Date(p.lastSeen.replace(' ', 'T').includes('T') ? p.lastSeen.replace(' ', 'T') + 'Z' : p.lastSeen).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' }) : '---'}
+            </span>
+          </div>
+        </TableCell>
                 <TableCell className="font-mono text-xs text-zinc-400">
                   <Badge variant="outline" className="text-[9px] px-1 py-0 mb-1 border-blue-500/20 text-blue-400">{p.ip}</Badge>
                   <br/>

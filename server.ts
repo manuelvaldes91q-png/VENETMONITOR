@@ -833,28 +833,32 @@ async function startServer() {
                 }
               }).filter(Boolean);
 
-              // Process each lease sync individually for robustness
-              for (const item of leaseData) {
-                try {
-                  const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(item.mac) as any;
-                  
-                  if (!existing) {
-                    const id = Math.random().toString(36).substring(7);
-                    db.prepare(`
-                      INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
-                  } else {
-                    db.prepare(`
-                      UPDATE provisioning 
-                      SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-                      WHERE mac = ?
-                    `).run(item.ip, item.finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+              // Process each lease sync inside a transaction for efficiency
+              const syncTransaction = db.transaction((items) => {
+                for (const item of items) {
+                  try {
+                    const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(item.mac) as any;
+                    if (!existing) {
+                      const id = Math.random().toString(36).substring(7);
+                      db.prepare(`
+                        INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                      `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
+                    } else {
+                      db.prepare(`
+                        UPDATE provisioning 
+                        SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
+                        WHERE mac = ?
+                      `).run(item.ip, item.finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+                    }
+                  } catch (itemErr) {
+                    // Fail silently for single item
                   }
-                } catch (dbErr) {
-                  // Skip individual record failures
                 }
-              }
+              });
+
+              syncTransaction(leaseData);
+              console.log(`[${new Date().toISOString()}] Monitor: Synced ${leaseData.length} clients from ${device.name}`);
 
               // Router Stats
               if (resources.length > 0) {
