@@ -215,9 +215,9 @@ async function startServer() {
     const p = req.body;
     const id = Math.random().toString(36).substring(7);
     db.prepare(`
-      INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName);
+      INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName, p.arpEnabled ? 1 : 0);
     res.json({ id, ...p });
   });
 
@@ -251,37 +251,65 @@ async function startServer() {
         });
         await api.connect();
 
+        // 1. DHCP Lease Management (Make Static & Set Comment)
+        const leasesList = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
+        if (leasesList.length > 0) {
+          const leaseId = leasesList[0]['.id'];
+          // Make static if needed
+          if (leasesList[0].dynamic === 'true') {
+            await api.write('/ip/dhcp-server/lease/make-static', [`=.id=${leaseId}`]);
+          }
+          // Set Comment
+          await api.write('/ip/dhcp-server/lease/set', [
+            `=.id=${leaseId}`,
+            `=comment=${client.deviceName}`
+          ]);
+        }
+
+        // 2. ARP Management (Internet Access)
         if (arpEnabled !== undefined) {
           const arpList = await api.write('/ip/arp/print', [`?address=${client.ip}`]);
           if (arpList.length > 0) {
             const entryId = arpList[0]['.id'];
             await api.write('/ip/arp/set', [
               `=.id=${entryId}`,
-              `=disabled=${arpEnabled ? 'false' : 'true'}`
+              `=disabled=${arpEnabled ? 'false' : 'true'}`,
+              `=comment=${client.deviceName}`,
+              `=mac-address=${client.mac}`
             ]);
-            console.log(`MikroTik: ARP ${arpEnabled ? 'enabled' : 'disabled'} for ${client.ip}`);
+            console.log(`MikroTik: ARP ${arpEnabled ? 'enabled' : 'disabled'} with comment for ${client.ip}`);
           } else if (arpEnabled) {
             await api.write('/ip/arp/add', [
               `=address=${client.ip}`,
               `=mac-address=${client.mac}`,
               `=interface=${client.interfaceName || 'bridge-local'}`,
-              '=comment=VENET-PRO'
+              `=comment=${client.deviceName}`
             ]);
             console.log(`MikroTik: ARP created/enabled for ${client.ip}`);
           }
         }
 
+        // 3. Simple Queue Management (Speed Limit)
         if (speedLimit !== undefined) {
-          // Update Simple Queue
-          const queueList = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
-          if (queueList.length > 0) {
-            const queueId = queueList[0]['.id'];
+          // Try finding by name first
+          let queueId = null;
+          const queueByName = await api.write('/queue/simple/print', [`?name=${client.deviceName}`]);
+          if (queueByName.length > 0) {
+            queueId = queueByName[0]['.id'];
+          } else {
+            // Find by IP
+            const queueList = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
+            if (queueList.length > 0) queueId = queueList[0]['.id'];
+          }
+
+          if (queueId) {
             await api.write('/queue/simple/set', [
               `=.id=${queueId}`,
-              `=max-limit=${speedLimit}`
+              `=max-limit=${speedLimit}`,
+              `=name=${client.deviceName}`,
+              `=target=${client.ip}/32`
             ]);
           } else {
-            // Create if it doesn't exist
             await api.write('/queue/simple/add', [
               `=name=${client.deviceName}`,
               `=target=${client.ip}/32`,
@@ -354,28 +382,37 @@ async function startServer() {
 
       // Enriched data for the UI and DB Update
       const enrichedLeases = leases.map(lease => {
-        const ip = lease.address;
-        const mac = lease['mac-address'] || lease.mac_address;
-        
-        if (!mac || mac === '00:00:00:00:00:00') {
-          return null;
-        }
-
-        const matchingQueue = queues.find(q => {
-          const target = q.target || '';
-          return target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
-        });
-        
-        const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '10M/10M';
-        const matchingArp = arps.find(a => a.address === ip);
-        const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
-
-        const routerName = lease.comment || lease['host-name'] || lease.host_name;
-        
         try {
-          // Use INSERT OR REPLACE/IGNORE patterns for robustness
-          const existing = db.prepare("SELECT id, deviceName FROM provisioning WHERE mac = ?").get(mac) as any;
-          const finalName = routerName || (existing ? existing.deviceName : `Client ${ip}`);
+          const ip = lease.address;
+          const mac = lease['mac-address'] || lease.mac_address;
+          if (!mac || mac === '00:00:00:00:00:00') return null;
+
+          const routerComment = lease.comment;
+          const routerHost = lease['host-name'] || lease.host_name;
+          
+          // Primary name is DHCP Comment
+          const finalName = routerComment || routerHost || `Client ${ip}`;
+
+          // Match Queue: By Target IP OR by Name (if it matches the DHCP comment)
+          const matchingQueue = queues.find(q => {
+            const target = q.target || '';
+            const qName = q.name || '';
+            const qComment = q.comment || '';
+            
+            const matchesIp = target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+            const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
+            
+            return matchesIp || matchesName;
+          });
+          
+          const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '1M/1M';
+          
+          // Match ARP
+          const matchingArp = arps.find(a => a.address === ip && (a['mac-address'] === mac || a.mac_address === mac || !a['mac-address']));
+          const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+
+          // Sync to DB logic
+          const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(mac) as any;
 
           if (!existing) {
             const id = Math.random().toString(36).substring(7);
@@ -390,19 +427,19 @@ async function startServer() {
               WHERE mac = ?
             `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
           }
-        } catch (dbErr: any) {
-          console.error(`[Manual Sync] DB Error for MAC ${mac}:`, dbErr.message);
-        }
 
-        return { 
-          ...lease, 
-          address: ip, 
-          mac_address: mac, 
-          speedLimit, 
-          arpEnabled, 
-          comment: routerName || `Client ${ip}`,
-          isProvisioned: true 
-        };
+          return { 
+            ...lease, 
+            address: ip, 
+            mac_address: mac, 
+            speedLimit, 
+            arpEnabled, 
+            comment: finalName,
+            isProvisioned: true 
+          };
+        } catch (itemErr: any) {
+          return null;
+        }
       }).filter(Boolean);
 
       res.json(enrichedLeases);
@@ -763,40 +800,56 @@ async function startServer() {
               const interfacesList = await api.write('/interface/print');
               
               const leaseData = leases.map(lease => {
-                const ip = lease.address;
-                const mac = lease['mac-address'] || lease.mac_address;
-                if (!mac || mac === '00:00:00:00:00:00') return null;
+                try {
+                  const ip = lease.address;
+                  const mac = lease['mac-address'] || lease.mac_address;
+                  if (!mac || mac === '00:00:00:00:00:00') return null;
 
-                const routerComment = lease.comment;
-                const routerHost = lease['host-name'] || lease.host_name;
-                const matchingQueue = queues.find(q => {
-                  const target = q.target || '';
-                  return target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
-                });
-                const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '10M/10M';
-                const matchingArp = arps.find(a => a.address === ip);
-                const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
-                return { mac, ip, routerComment, routerHost, speedLimit, arpEnabled };
+                  const routerComment = lease.comment;
+                  const routerHost = lease['host-name'] || lease.host_name;
+                  
+                  // Primary name is DHCP Comment
+                  const finalName = routerComment || routerHost || `Client ${ip}`;
+
+                  // Match Queue
+                  const matchingQueue = queues.find(q => {
+                    const target = q.target || '';
+                    const qName = q.name || '';
+                    const qComment = q.comment || '';
+                    const matchesIp = target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+                    const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
+                    return matchesIp || matchesName;
+                  });
+                  
+                  const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '1M/1M';
+                  
+                  // Match ARP
+                  const matchingArp = arps.find(a => a.address === ip && (a['mac-address'] === mac || a.mac_address === mac || !a['mac-address']));
+                  const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+                  
+                  return { mac, ip, finalName, speedLimit, arpEnabled };
+                } catch (e) {
+                  return null;
+                }
               }).filter(Boolean);
 
               // Process each lease sync individually for robustness
               for (const item of leaseData) {
                 try {
-                  const existing = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(item.mac) as any;
-                  const finalName = item.routerComment || item.routerHost || (existing ? existing.deviceName : `Client ${item.ip}`);
+                  const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(item.mac) as any;
                   
                   if (!existing) {
                     const id = Math.random().toString(36).substring(7);
                     db.prepare(`
                       INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    `).run(id, item.ip, item.mac, finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
+                    `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
                   } else {
                     db.prepare(`
                       UPDATE provisioning 
                       SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
                       WHERE mac = ?
-                    `).run(item.ip, finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+                    `).run(item.ip, item.finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
                   }
                 } catch (dbErr) {
                   // Skip individual record failures
@@ -875,7 +928,7 @@ async function startServer() {
     }
   };
 
-  setInterval(monitorDevices, 120000); 
+  setInterval(monitorDevices, 60000); 
   monitorDevices(); // Initial run on startup
 
   // Vite setup

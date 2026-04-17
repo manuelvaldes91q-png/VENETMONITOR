@@ -1028,19 +1028,20 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
 
   const importLease = async (lease: any) => {
     try {
+      // Manual import also triggers the full MikroTik logic (Static, Comment, ARP, Queue)
       await axios.post('/api/provisioning', {
-        deviceName: lease.comment || lease['host-name'] || `Lease ${lease.address}`,
+        deviceName: lease.comment || lease['host-name'] || `CLIENTE ${lease.address}`,
         ip: lease.address,
         mac: lease.mac_address,
         routerId: selectedRouterId,
-        speedLimit: lease.speedLimit || '10M/10M',
+        speedLimit: lease.speedLimit || '1M/1M',
         interfaceName: 'SALIDA',
-        arpEnabled: lease.arpEnabled !== undefined ? lease.arpEnabled : 1
+        arpEnabled: 1 // Enable by default on import
       });
       onRefresh();
-      toast.success(`Importado: ${lease.address}`);
+      toast.success(`Cliente Habilitado: ${lease.address}`);
     } catch (e) {
-      toast.error("Error al importar");
+      toast.error("Error al habilitar cliente");
     }
   };
 
@@ -1119,7 +1120,7 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
       <Card className="bg-[#111] border-[#262626]">
         <div className="p-4 border-b border-[#262626] bg-[#161616] flex items-center justify-between">
           <h3 className="text-sm font-bold text-blue-400 uppercase tracking-widest flex items-center gap-2">
-            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} /> Sincronización Real-Time
+            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} /> MikroTik DHCP Leases (Real-Time)
           </h3>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-[10px] border-blue-500/20 text-blue-500/50 animate-pulse">AUTO-SYNC ACTIVO</Badge>
@@ -1192,35 +1193,90 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
       <Card className="bg-[#111] border-[#262626]">
         <Table>
           <TableHeader>
-            <TableRow className="border-[#262626]">
-              <TableHead>Cliente</TableHead>
-              <TableHead>IP / MAC</TableHead>
-              <TableHead>Plan</TableHead>
-              <TableHead>Estado</TableHead>
-              <TableHead className="text-right">Corte / Ajustes</TableHead>
+            <TableRow className="border-[#262626] bg-[#0d0d0d]">
+              <TableHead className="text-[10px] uppercase font-black text-zinc-500 tracking-widest">NOMBRE / CLIENTE</TableHead>
+              <TableHead className="text-[10px] uppercase font-black text-zinc-500 tracking-widest">IDENTIFICADOR RED</TableHead>
+              <TableHead className="text-[10px] uppercase font-black text-zinc-500 tracking-widest">VELOCIDAD MIKROTIK</TableHead>
+              <TableHead className="text-[10px] uppercase font-black text-zinc-500 tracking-widest text-center">ESTADO INTERNET</TableHead>
+              <TableHead className="text-right text-[10px] uppercase font-black text-zinc-500 tracking-widest px-4">ACCIONES SYNC</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {uniqueProvisioning.map((p: Provisioning) => (
-              <TableRow key={p.id} className="border-[#262626] hover:bg-white/5 transition-colors">
-                <TableCell className="font-medium text-white">
+              <TableRow key={p.id} className="border-[#262626] group hover:bg-[#161616] transition-colors">
+                <TableCell className="font-medium text-white px-4 py-3">
                   <div className="flex flex-col">
-                    <span>{p.deviceName}</span>
-                    <span className="text-[9px] text-zinc-500 uppercase tracking-tighter">Visto: {p.lastSeen ? new Date(p.lastSeen.replace(' ', 'T') + 'Z').toLocaleString() : '---'}</span>
+                    <span className="text-sm font-bold text-white uppercase tracking-tight">{p.deviceName}</span>
+                    <span className="text-[9px] text-zinc-500 uppercase tracking-tighter">Visto: {p.lastSeen ? new Date(p.lastSeen.replace(' ', 'T') + 'Z').toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' }) : '---'}</span>
                   </div>
                 </TableCell>
-                <TableCell className="font-mono text-xs text-zinc-400">{p.ip}<br/><span className="text-zinc-600">{p.mac}</span></TableCell>
-                <TableCell>
-                  <button 
-                    onClick={() => handleUpdateSpeed(p.id, p.speedLimit)}
-                    className="text-xs bg-zinc-900 border border-zinc-800 px-2 py-1 rounded hover:border-blue-500 text-blue-400 font-mono"
-                  >
-                    {p.speedLimit}
-                  </button>
+                <TableCell className="font-mono text-xs text-zinc-400">
+                  <Badge variant="outline" className="text-[9px] px-1 py-0 mb-1 border-blue-500/20 text-blue-400">{p.ip}</Badge>
+                  <br/>
+                  <span className="text-[10px] text-zinc-600 block">{p.mac}</span>
                 </TableCell>
-                <TableCell><Badge className={p.arpEnabled ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>{p.arpEnabled ? 'ACTIVO' : 'CORTADO'}</Badge></TableCell>
-                <TableCell className="text-right space-x-4">
-                  <Switch checked={p.arpEnabled} onCheckedChange={() => toggleArp(p)} />
+                <TableCell>
+                  <div className="flex flex-col gap-1.5">
+                    <button 
+                      onClick={() => handleUpdateSpeed(p.id, p.speedLimit)}
+                      className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded hover:border-blue-500 text-blue-400 font-mono text-left w-fit"
+                    >
+                      {p.speedLimit}
+                    </button>
+                    <div className="flex gap-1">
+                      <div className={`w-1.5 h-1.5 rounded-full ${p.speedLimit !== '1M/1M' ? 'bg-blue-500 shadow-[0_0_5px_#3b82f6]' : 'bg-zinc-800'}`} title="Queue Configurada" />
+                      <span className="text-[8px] text-zinc-600 uppercase font-black">Queue</span>
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-col gap-1">
+                    <div 
+                      onClick={() => toggleArp(p)}
+                      className={`
+                        cursor-pointer px-2 py-0.5 rounded text-[10px] font-black tracking-widest text-center
+                        ${p.arpEnabled 
+                          ? 'bg-green-500/10 text-green-500 border border-green-500/20' 
+                          : 'bg-red-500/10 text-red-500 border border-red-500/20 animate-pulse'}
+                      `}
+                    >
+                      {p.arpEnabled ? 'HABILITADO' : 'CORTADO'}
+                    </div>
+                    <div className="flex gap-1 justify-center">
+                      <div className={`w-1.5 h-1.5 rounded-full ${p.arpEnabled ? 'bg-green-500 shadow-[0_0_5px_#22c55e]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
+                      <span className="text-[8px] text-zinc-600 uppercase font-black">ARP</span>
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <Switch checked={p.arpEnabled} onCheckedChange={() => toggleArp(p)} className="data-[state=checked]:bg-green-500" />
+                    <Button 
+                      size="icon" 
+                      variant="ghost" 
+                      className="h-8 w-8 text-zinc-500 hover:text-green-400 hover:bg-green-500/5"
+                      onClick={async () => {
+                        try {
+                          await axios.put(`/api/provisioning/${p.id}/sync`);
+                          onRefresh();
+                          toast.success("Sincronización completa MikroTik OK");
+                        } catch (err) {
+                          toast.error("Error al sincronizar");
+                        }
+                      }}
+                      title="Sincronizar DHCP/ARP/Queue"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </Button>
+                    <Button 
+                      size="icon" 
+                      variant="ghost" 
+                      className="h-8 w-8 text-zinc-500 hover:text-red-500 hover:bg-red-500/5"
+                      onClick={() => { if(window.confirm('¿Eliminar cliente?')) handleDelete(p.id) }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -1428,11 +1484,11 @@ function SettingsView({ settings, onRefresh }: any) {
         <CardContent className="pt-6 space-y-6">
           <div className="space-y-2">
             <Label>Telegram Bot Token</Label>
-            <Input className="bg-[#1a1a1a] border-[#262626]" value={localSettings.telegramBotToken} onChange={e => setLocalSettings({...localSettings, telegramBotToken: e.target.value})} />
+            <Input className="bg-[#1a1a1a] border-[#262626]" value={localSettings.telegramBotToken || ""} onChange={e => setLocalSettings({...localSettings, telegramBotToken: e.target.value})} />
           </div>
           <div className="space-y-2">
             <Label>Telegram Chat ID (Varios usuarios, separar por coma)</Label>
-            <Input className="bg-[#1a1a1a] border-[#262626]" placeholder="ID1, ID2, ID3" value={localSettings.telegramChatId} onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} />
+            <Input className="bg-[#1a1a1a] border-[#262626]" placeholder="ID1, ID2, ID3" value={localSettings.telegramChatId || ""} onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} />
             <p className="text-[10px] text-zinc-500">Ejemplo: 12345678, 87654321</p>
           </div>
           <Button onClick={handleSave} className="w-full bg-blue-600">Guardar Cambios</Button>
