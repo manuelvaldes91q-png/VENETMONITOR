@@ -351,11 +351,11 @@ async function startServer() {
       // Enriched data for the UI and DB Update
       const enrichedLeases = leases.map(lease => {
         const ip = lease.address;
-        const mac = lease.mac_address;
+        const mac = lease['mac-address'];
         
         // Enhance queue matching
-        const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.includes(ip)));
-        const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
+        const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`)));
+        const speedLimit = matchingQueue ? matchingQueue['max-limit'] : '10M/10M';
         
         const matchingArp = arps.find(a => a.address === ip);
         const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
@@ -740,13 +740,14 @@ async function startServer() {
               
               const leaseData = leases.map(lease => {
                 const ip = lease.address;
+                const mac = lease['mac-address'];
                 const routerComment = lease.comment;
                 const routerHost = lease['host-name'];
-                const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.includes(ip)));
-                const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
+                const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`)));
+                const speedLimit = matchingQueue ? matchingQueue['max-limit'] : '10M/10M';
                 const matchingArp = arps.find(a => a.address === ip);
                 const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
-                return { mac: lease.mac_address, ip, routerComment, routerHost, speedLimit, arpEnabled };
+                return { mac, ip, routerComment, routerHost, speedLimit, arpEnabled };
               });
 
               // Batch DB sync
