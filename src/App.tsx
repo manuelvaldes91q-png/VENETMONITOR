@@ -981,12 +981,13 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
 
   const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
 
-  // Deduplicate by MAC for UI cleanliness
+  // Deduplicate by IP + MAC for UI accuracy
   const uniqueProvisioning = useMemo(() => {
     const seen = new Set();
     return provisioning.filter((p: Provisioning) => {
-      if (seen.has(p.mac)) return false;
-      seen.add(p.mac);
+      const key = `${p.routerId}-${p.mac}-${p.ip}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
   }, [provisioning]);

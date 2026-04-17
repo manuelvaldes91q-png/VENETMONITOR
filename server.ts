@@ -48,7 +48,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS provisioning (
     id TEXT PRIMARY KEY,
     ip TEXT,
-    mac TEXT UNIQUE,
+    mac TEXT,
     deviceName TEXT,
     routerId TEXT,
     dhcpLease INTEGER DEFAULT 1,
@@ -56,7 +56,8 @@ db.exec(`
     speedLimit TEXT,
     interfaceName TEXT,
     lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(routerId, mac, ip)
   );
 `);
 
@@ -388,27 +389,20 @@ async function startServer() {
       const enrichedLeases = leases.map(lease => {
         try {
           const ip = lease.address;
-          // Handle various possible key names for MAC address
-          const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac;
+          const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac || '00:00:00:00:00:00';
           
-          if (!mac || mac === '00:00:00:00:00:00') return null;
+          if (!ip) return null; // IP is mandatory for sync
 
           const routerComment = lease.comment || '';
           const routerHost = lease['host-name'] || lease.host_name || '';
-          
-          // Primary name is DHCP Comment
           const finalName = routerComment || routerHost || `Client ${ip}`;
 
-          // Match Queue: By Target IP OR by Name (if it matches the DHCP comment)
+          // Match Queue
           const matchingQueue = queues.find(q => {
             const target = String(q.target || '');
             const qName = String(q.name || '');
             const qComment = String(q.comment || '');
-            
-            const matchesIp = target.includes(ip);
-            const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
-            
-            return matchesIp || matchesName;
+            return target.includes(ip) || (routerComment && (qName === routerComment || qComment === routerComment));
           });
           
           const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit || '1M/1M') : '1M/1M';
@@ -417,21 +411,24 @@ async function startServer() {
           const matchingArp = arps.find(a => a.address === ip);
           const arpEnabled = (matchingArp && String(matchingArp.disabled) === 'false') ? 1 : 0;
 
-          // Sync to DB logic inside the enrichment (Atomic update/insert)
-          const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(mac) as any;
-
-          if (!existing) {
-            const id = Math.random().toString(36).substring(7);
-            db.prepare(`
-              INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
-          } else {
-            db.prepare(`
-              UPDATE provisioning 
-              SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-              WHERE mac = ?
-            `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
+          // Sync to DB logic (Atomic update/insert based on multiple keys to avoid collisions)
+          try {
+            const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ? AND routerId = ?").get(mac, device.id) as any;
+            if (!existing) {
+              const id = Math.random().toString(36).substring(7);
+              db.prepare(`
+                INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
+            } else {
+              db.prepare(`
+                UPDATE provisioning 
+                SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `).run(ip, finalName, speedLimit, arpEnabled, existing.id);
+            }
+          } catch (dbErr: any) {
+            console.error(`[Manual Sync] DB Error for ${ip}:`, dbErr.message);
           }
 
           return { 
@@ -814,9 +811,9 @@ async function startServer() {
               const leaseData = leases.map(lease => {
                 try {
                   const ip = lease.address;
-                  const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac;
+                  const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac || '00:00:00:00:00:00';
                   
-                  if (!mac || mac === '00:00:00:00:00:00') return null;
+                  if (!ip) return null;
 
                   const routerComment = lease.comment || '';
                   const routerHost = lease['host-name'] || lease.host_name || '';
@@ -827,9 +824,7 @@ async function startServer() {
                     const target = String(q.target || '');
                     const qName = String(q.name || '');
                     const qComment = String(q.comment || '');
-                    const matchesIp = target.includes(ip);
-                    const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
-                    return matchesIp || matchesName;
+                    return target.includes(ip) || (routerComment && (qName === routerComment || qComment === routerComment));
                   });
                   
                   const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit || '1M/1M') : '1M/1M';
@@ -848,19 +843,19 @@ async function startServer() {
               const syncTransaction = db.transaction((items) => {
                 for (const item of items) {
                   try {
-                    const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(item.mac) as any;
+                    const existing = db.prepare("SELECT id FROM provisioning WHERE (mac = ? OR ip = ?) AND routerId = ?").get(item.mac, item.ip, device.id) as any;
                     if (!existing) {
                       const id = Math.random().toString(36).substring(7);
                       db.prepare(`
-                        INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+                        INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                       `).run(id, item.ip, item.mac, item.finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
                     } else {
                       db.prepare(`
                         UPDATE provisioning 
-                        SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-                        WHERE mac = ?
-                      `).run(item.ip, item.finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+                        SET ip = ?, mac = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                      `).run(item.ip, item.mac, item.finalName, item.speedLimit, item.arpEnabled, existing.id);
                     }
                   } catch (itemErr) {
                     // Fail silently for single item
