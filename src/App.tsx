@@ -963,6 +963,7 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
         deviceName: lease.comment || lease['host-name'] || `Lease ${lease.address}`,
         ip: lease.address,
         mac: lease.mac_address,
+        routerId: selectedRouterId,
         speedLimit: lease.speedLimit || '10M/10M',
         interfaceName: 'SALIDA',
         arpEnabled: lease.arpEnabled !== undefined ? lease.arpEnabled : 1

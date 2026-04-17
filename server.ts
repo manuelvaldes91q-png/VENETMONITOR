@@ -50,6 +50,7 @@ db.exec(`
     ip TEXT,
     mac TEXT,
     deviceName TEXT,
+    routerId TEXT,
     dhcpLease INTEGER DEFAULT 1,
     arpEnabled INTEGER DEFAULT 1,
     speedLimit TEXT,
@@ -199,14 +200,83 @@ async function startServer() {
     const p = req.body;
     const id = Math.random().toString(36).substring(7);
     db.prepare(`
-      INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, p.ip, p.mac, p.deviceName, p.speedLimit, p.interfaceName);
+      INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName);
     res.json({ id, ...p });
   });
 
-  app.patch("/api/provisioning/:id", (req, res) => {
+  app.patch("/api/provisioning/:id", async (req, res) => {
     const { arpEnabled, speedLimit } = req.body;
+    const client = db.prepare("SELECT * FROM provisioning WHERE id = ?").get(req.params.id) as any;
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    const router = db.prepare("SELECT * FROM devices WHERE id = ?").get(client.routerId) as any;
+    
+    // Fallback: If no routerId, try to find a router that can reach this IP
+    let activeRouter = router;
+    if (!activeRouter || router.status !== 'up') {
+      const allRouters = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up'").all() as any[];
+      activeRouter = allRouters[0]; // Take the first active one as a desperate fallback if not linked
+    }
+
+    if (activeRouter && activeRouter.status === 'up') {
+      try {
+        const api = new RouterOSAPI({
+          host: activeRouter.ip,
+          user: activeRouter.username,
+          password: activeRouter.password,
+          port: activeRouter.apiPort || 8728,
+          timeout: 10
+        });
+        await api.connect();
+
+        if (arpEnabled !== undefined) {
+          const arpList = await api.write('/ip/arp/print', [`?address=${client.ip}`]);
+          if (arpList.length > 0) {
+            const entryId = arpList[0]['.id'];
+            await api.write('/ip/arp/set', [
+              `=.id=${entryId}`,
+              `=disabled=${arpEnabled ? 'false' : 'true'}`
+            ]);
+            console.log(`MikroTik: ARP ${arpEnabled ? 'enabled' : 'disabled'} for ${client.ip}`);
+          } else if (arpEnabled) {
+            await api.write('/ip/arp/add', [
+              `=address=${client.ip}`,
+              `=mac-address=${client.mac}`,
+              `=interface=${client.interfaceName || 'bridge-local'}`,
+              '=comment=VENET-PRO'
+            ]);
+            console.log(`MikroTik: ARP created/enabled for ${client.ip}`);
+          }
+        }
+
+        if (speedLimit !== undefined) {
+          // Update Simple Queue
+          const queueList = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
+          if (queueList.length > 0) {
+            const queueId = queueList[0]['.id'];
+            await api.write('/queue/simple/set', [
+              `=.id=${queueId}`,
+              `=max-limit=${speedLimit}`
+            ]);
+          } else {
+            // Create if it doesn't exist
+            await api.write('/queue/simple/add', [
+              `=name=${client.deviceName}`,
+              `=target=${client.ip}/32`,
+              `=max-limit=${speedLimit}`
+            ]);
+          }
+        }
+
+        api.close();
+      } catch (err: any) {
+        console.error("MikroTik Sync Error:", err.message);
+        // We continue to update DB even if ROS fails, but maybe log it?
+      }
+    }
+
     if (arpEnabled !== undefined) {
       db.prepare("UPDATE provisioning SET arpEnabled = ? WHERE id = ?").run(arpEnabled ? 1 : 0, req.params.id);
     }
@@ -275,15 +345,15 @@ async function startServer() {
         if (!existing) {
           const id = Math.random().toString(36).substring(7);
           db.prepare(`
-            INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName, arpEnabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(id, ip, mac, name, speedLimit, 'SALIDA', arpEnabled);
+            INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(id, ip, mac, name, device.id, speedLimit, 'SALIDA', arpEnabled);
         } else {
           db.prepare(`
             UPDATE provisioning 
-            SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?
+            SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
             WHERE mac = ?
-          `).run(ip, name, speedLimit, arpEnabled, mac);
+          `).run(ip, name, device.id, speedLimit, arpEnabled, mac);
         }
 
         return { ...lease, speedLimit, arpEnabled, comment: name };
@@ -387,9 +457,9 @@ async function startServer() {
   });
 
   app.get("/api/global-stats", async (req, res) => {
-    const googlePing = await pingHost("8.8.8.8");
+    const global = getSetting("global") || {};
     res.json({
-      googleLatency: googlePing.alive ? googlePing.time : null
+      googleLatency: global.googleLatency || null
     });
   });
 
@@ -671,16 +741,16 @@ async function startServer() {
               if (!existing) {
                 const id = Math.random().toString(36).substring(7);
                 db.prepare(`
-                  INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName, arpEnabled)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)
-                `).run(id, ip, mac, name, speedLimit, 'SALIDA', arpEnabled);
+                  INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(id, ip, mac, name, device.id, speedLimit, 'SALIDA', arpEnabled);
               } else {
                 // Update existing record with Mikrotik's truth
                 db.prepare(`
                   UPDATE provisioning 
-                  SET ip = ?, deviceName = ?, speedLimit = ?, arpEnabled = ?
+                  SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
                   WHERE mac = ?
-                `).run(ip, name, speedLimit, arpEnabled, mac);
+                `).run(ip, name, device.id, speedLimit, arpEnabled, mac);
               }
             }
             api.close();
