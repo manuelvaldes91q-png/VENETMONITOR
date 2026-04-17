@@ -26,7 +26,10 @@ import {
   Download,
   History,
   Lock,
-  Settings2
+  Settings2,
+  Wrench,
+  Gauge,
+  Globe
 } from 'lucide-react';
 import { analyzeNetworkHealth, askOracle as askOracleAI } from './services/geminiService';
 import { 
@@ -245,6 +248,7 @@ export default function App() {
             { id: 'infrastructure', icon: Server, label: 'Infraestructura' },
             { id: 'antennas', icon: Wifi, label: 'Antenas' },
             { id: 'provisioning', icon: Zap, label: 'Aprovisionamiento' },
+            { id: 'tools', icon: Wrench, label: 'Mantenimiento' },
             { id: 'logs', icon: Activity, label: 'Logs' },
             { id: 'settings', icon: SettingsIcon, label: 'Ajustes' },
           ].map((item) => (
@@ -282,7 +286,8 @@ export default function App() {
             {activeTab === 'oracle' && <OracleView key="oracle" devices={devices} logs={logs} oracleData={oracleData} loading={oracleLoading} onAsk={askOracle} />}
             {activeTab === 'infrastructure' && <InfrastructureView key="infra" mode="mikrotik" devices={devices.filter((d: any) => d.type !== 'antenna')} onRefresh={fetchData} />}
             {activeTab === 'antennas' && <InfrastructureView key="ant" mode="antennas" devices={devices.filter((d: any) => d.type === 'antenna')} onRefresh={fetchData} />}
-            {activeTab === 'provisioning' && <ProvisioningView key="prov" provisioning={provisioning} onRefresh={fetchData} />}
+            {activeTab === 'provisioning' && <ProvisioningView key="prov" provisioning={provisioning} devices={devices} onRefresh={fetchData} />}
+            {activeTab === 'tools' && <MaintenanceView key="tools" devices={devices} />}
             {activeTab === 'logs' && <LogsView key="logs" logs={logs} devices={devices} />}
             {activeTab === 'settings' && <SettingsView key="settings" settings={settings} onRefresh={fetchData} />}
           </AnimatePresence>
@@ -298,6 +303,7 @@ export default function App() {
             { id: 'infrastructure', icon: Server },
             { id: 'antennas', icon: Wifi },
             { id: 'provisioning', icon: Zap },
+            { id: 'tools', icon: Wrench },
             { id: 'settings', icon: SettingsIcon },
           ].map((item) => (
             <button
@@ -547,14 +553,14 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
                   axisLine={false} 
                   tickFormatter={(val) => new Date(val).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 />
-                <YAxis stroke="#525252" fontSize={10} tickLine={false} axisLine={false} unit="M" />
+                <YAxis stroke="#525252" fontSize={10} tickLine={false} axisLine={false} unit=" Mbps" />
                 <Tooltip 
                   labelFormatter={(val) => new Date(val).toLocaleString()}
                   contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px' }}
                   itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
                 />
-                <Area type="monotone" dataKey="trafficIn" name="Bajo (RX)" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorIn)" />
-                <Area type="monotone" dataKey="trafficOut" name="Sube (TX)" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#colorOut)" />
+                <Area type="monotone" dataKey="trafficIn" name="Descarga (RX)" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorIn)" />
+                <Area type="monotone" dataKey="trafficOut" name="Subida (TX)" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#colorOut)" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -920,9 +926,52 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
   );
 }
 
-function ProvisioningView({ provisioning, onRefresh }: any) {
+function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [newProv, setNewProv] = useState<Partial<Provisioning>>({ speedLimit: '10M/10M', interfaceName: 'SALIDA' });
+  const [leases, setLeases] = useState<any[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [selectedRouterId, setSelectedRouterId] = useState("");
+
+  const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
+
+  // Trigger auto-refresh for leases if a router is selected
+  useEffect(() => {
+    if (selectedRouterId) {
+      fetchLeases(selectedRouterId);
+      const inv = setInterval(() => fetchLeases(selectedRouterId), 60000);
+      return () => clearInterval(inv);
+    }
+  }, [selectedRouterId]);
+
+  const fetchLeases = async (routerId: string) => {
+    if (!routerId) return;
+    setSyncing(true);
+    try {
+      const res = await axios.get(`/api/router-tools/dhcp-leases/${routerId}`);
+      setLeases(res.data);
+      toast.success("Leases sincronizados desde MikroTik");
+    } catch (e) {
+      toast.error("Error al sincronizar leases");
+    }
+    setSyncing(false);
+  };
+
+  const importLease = async (lease: any) => {
+    try {
+      await axios.post('/api/provisioning', {
+        deviceName: lease.comment || `Lease ${lease.address}`,
+        ip: lease.address,
+        mac: lease.mac_address,
+        speedLimit: '10M/10M',
+        interfaceName: 'SALIDA'
+      });
+      onRefresh();
+      toast.success(`Importado: ${lease.address}`);
+    } catch (e) {
+      toast.error("Error al importar");
+    }
+  };
 
   const handleAdd = async () => {
     await axios.post('/api/provisioning', newProv);
@@ -954,7 +1003,7 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
       <header className="flex justify-between items-center">
         <div>
           <h2 className="text-3xl font-bold text-white">Aprovisionamiento</h2>
-          <p className="text-zinc-400">Gestión de clientes y cortes de servicio.</p>
+          <p className="text-zinc-400">Gestión de clientes y sincronización automática (DHCP/ARP).</p>
         </div>
         <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
           <DialogTrigger asChild><Button className="bg-blue-600"><Plus className="w-4 h-4 mr-2" /> Nuevo Cliente</Button></DialogTrigger>
@@ -990,6 +1039,72 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
           </DialogContent>
         </Dialog>
       </header>
+
+      <Card className="bg-[#111] border-[#262626]">
+        <div className="p-4 border-b border-[#262626] bg-[#161616] flex items-center justify-between">
+          <h3 className="text-sm font-bold text-blue-400 uppercase tracking-widest flex items-center gap-2">
+            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} /> Sincronización Real-Time
+          </h3>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-[10px] border-blue-500/20 text-blue-500/50 animate-pulse">AUTO-SYNC ACTIVO</Badge>
+            <select 
+              className="bg-[#0a0a0a] border border-[#262626] text-xs text-white rounded px-2 py-1"
+              value={selectedRouterId}
+              onChange={(e) => setSelectedRouterId(e.target.value)}
+            >
+              <option value="">Vista de Leases...</option>
+              {routers.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
+        </div>
+        
+        {leases.length > 0 && (
+          <div className="max-h-60 overflow-y-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-[#262626] bg-[#0d0d0d]">
+                  <TableHead className="text-[10px]">Address</TableHead>
+                  <TableHead className="text-[10px]">MAC / Host</TableHead>
+                  <TableHead className="text-[10px]">Status</TableHead>
+                  <TableHead className="text-right text-[10px]">Acción</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {leases.map((l, idx) => {
+                  const isDynamic = l.dynamic === 'true';
+                  const isProvisioned = provisioning.some((p: any) => p.ip === l.address || p.mac === l.mac_address);
+                  return (
+                    <TableRow key={idx} className="border-[#262626] hover:bg-zinc-900/50">
+                      <TableCell className="font-mono text-xs text-white">{l.address}</TableCell>
+                      <TableCell className="text-[10px] text-zinc-500">
+                        {l.mac_address}<br/>
+                        <span className="text-zinc-600">[{l['host-name'] || 'S/N'}]</span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          {isDynamic ? (
+                            <Badge variant="outline" className="text-[8px] border-yellow-500/50 text-yellow-500">DINÁMICA</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[8px] border-green-500/50 text-green-500">ESTÁTICA</Badge>
+                          )}
+                          {!isProvisioned && <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-500">NUEVO</Badge>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {!isProvisioned && (
+                          <Button size="sm" variant="ghost" className="h-6 text-[10px] text-blue-400" onClick={() => importLease(l)}>
+                            Importar
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </Card>
 
       <Card className="bg-[#111] border-[#262626]">
         <Table>
@@ -1219,6 +1334,139 @@ function SettingsView({ settings, onRefresh }: any) {
           <Button onClick={handleSave} className="w-full bg-blue-600">Guardar Cambios</Button>
         </CardContent>
       </Card>
+    </motion.div>
+  );
+}
+
+function MaintenanceView({ devices }: any) {
+  const [selectedRouterId, setSelectedRouterId] = useState("");
+  const [pingTarget, setPingTarget] = useState("8.8.8.8");
+  const [pingResults, setPingResults] = useState<any[]>([]);
+  const [runningTool, setRunningTool] = useState<string | null>(null);
+
+  const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
+
+  const runPing = async () => {
+    if (!selectedRouterId || !pingTarget) return;
+    setRunningTool('ping');
+    setPingResults([]);
+    try {
+      const res = await axios.post('/api/router-tools/ping', { deviceId: selectedRouterId, host: pingTarget });
+      setPingResults(res.data);
+      toast.success("Ping finalizado");
+    } catch (e) {
+      toast.error("Error en el ping");
+    }
+    setRunningTool(null);
+  };
+
+  const runSpeedtest = async () => {
+    if (!selectedRouterId) return;
+    setRunningTool('speedtest');
+    try {
+      const res = await axios.post('/api/router-tools/speedtest', { deviceId: selectedRouterId });
+      toast.info("Prueba de ancho de banda finalizada.");
+      console.log(res.data);
+    } catch (e) {
+      toast.error("Error en speedtest");
+    }
+    setRunningTool(null);
+  };
+
+  const runDnsCheck = async () => {
+    if (!selectedRouterId) return;
+    setRunningTool('dns');
+    try {
+      const res = await axios.post('/api/router-tools/ping', { deviceId: selectedRouterId, host: '8.8.8.8', count: 3 });
+      const avg = res.data.reduce((acc: any, curr: any) => acc + parseFloat(curr.time || '0'), 0) / 3;
+      toast.info(`DNS Google Ping: ${avg.toFixed(2)}ms (Desde Mikrotik)`);
+    } catch (e) {
+      toast.error("Error en check DNS");
+    }
+    setRunningTool(null);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+      <header>
+        <h2 className="text-3xl font-bold text-white">Panel de Mantenimiento</h2>
+        <p className="text-zinc-400">Herramientas de diagnóstico ejecutadas desde el hardware MikroTik.</p>
+      </header>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Ping Tool */}
+        <Card className="bg-[#111] border-[#262626] md:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-sm font-bold text-white flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-blue-500" /> HERRAMIENTA DE PING
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-4">
+              <div className="flex-1 space-y-2">
+                <Label className="text-[10px] text-zinc-500 uppercase">Target / Host</Label>
+                <Input value={pingTarget} onChange={e => setPingTarget(e.target.value)} className="bg-[#1a1a1a] border-[#262626] text-white" />
+              </div>
+              <div className="w-48 space-y-2">
+                <Label className="text-[10px] text-zinc-500 uppercase">Origen (Router)</Label>
+                <select 
+                  className="w-full h-10 bg-[#1a1a1a] border-[#262626] rounded-md px-3 text-sm text-white"
+                  value={selectedRouterId}
+                  onChange={(e) => setSelectedRouterId(e.target.value)}
+                >
+                  <option value="">Seleccionar...</option>
+                  {routers.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <Button onClick={runPing} disabled={!selectedRouterId || runningTool === 'ping'} className="w-full bg-blue-600 font-bold">
+              {runningTool === 'ping' ? <RefreshCw className="animate-spin w-4 h-4 mr-2" /> : <Activity className="w-4 h-4 mr-2" />}
+              EJECUTAR PING DESDE MIKROTIK
+            </Button>
+
+            {pingResults.length > 0 && (
+              <div className="mt-4 p-4 bg-black rounded-lg border border-zinc-800 font-mono text-xs space-y-1">
+                {pingResults.map((r, i) => (
+                  <div key={i} className="text-zinc-400">
+                    <span className="text-blue-500">seq={i}</span> host={r.host || pingTarget} time={r.time}s size={r.size}B status={r.status || 'OK'}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Diagnostic Buttons */}
+        <div className="space-y-6">
+          <Card className="bg-[#111] border-[#262626]">
+            <CardHeader><CardTitle className="text-sm font-bold text-white">TEST DE VELOCIDAD</CardTitle></CardHeader>
+            <CardContent>
+              <Button 
+                onClick={runSpeedtest} 
+                className="w-full bg-orange-600 hover:bg-orange-700" 
+                disabled={!selectedRouterId || !!runningTool}
+              >
+                <Gauge className="w-4 h-4 mr-2" /> SPEEDTEST CLI (UD/Bandwidth)
+              </Button>
+              <p className="text-[9px] text-zinc-500 mt-2 text-center">Ejecuta un Bandwidth Test UDP hacia el objetivo.</p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-[#111] border-[#262626]">
+            <CardHeader><CardTitle className="text-sm font-bold text-white">DIAGNÓSTICO DNS</CardTitle></CardHeader>
+            <CardContent>
+              <Button 
+                onClick={runDnsCheck} 
+                className="w-full bg-emerald-600 hover:bg-emerald-700"
+                disabled={!selectedRouterId || !!runningTool}
+              >
+                <Globe className="w-4 h-4 mr-2" /> PING GOOGLE DNS (8.8.8.8)
+              </Button>
+              <p className="text-[9px] text-zinc-500 mt-2 text-center">Mide la latencia de salida real de tu MikroTik.</p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </motion.div>
   );
 }

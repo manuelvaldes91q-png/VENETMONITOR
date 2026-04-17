@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, "database.sqlite");
 const db = new Database(dbPath);
 
+// Store for calculating traffic rates (Mbps)
+const lastBytesStore: Map<string, { rx: number; tx: number; time: number }> = new Map();
+
 // Create Tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS devices (
@@ -233,6 +236,79 @@ async function startServer() {
   // Oracle
   app.get("/api/oracle", (req, res) => {
     res.json(getSetting("oracle") || null);
+  });
+
+  // --- Router Tools (Live from MikroTik) ---
+  app.get("/api/router-tools/dhcp-leases/:deviceId", async (req, res) => {
+    const device = db.prepare("SELECT * FROM devices WHERE id = ?").get(req.params.deviceId) as any;
+    if (!device || device.type !== 'router') return res.status(404).json({ error: "Router not found" });
+
+    try {
+      const api = new RouterOSAPI({
+        host: device.ip,
+        user: device.username,
+        password: device.password,
+        port: device.apiPort || 8728,
+        timeout: 10
+      });
+      await api.connect();
+      const leases = await api.write('/ip/dhcp-server/lease/print');
+      api.close();
+      res.json(leases);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/router-tools/ping", async (req, res) => {
+    const { deviceId, host, count = 4 } = req.body;
+    const device = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId) as any;
+    if (!device || device.type !== 'router') return res.status(404).json({ error: "Router not found" });
+
+    try {
+      const api = new RouterOSAPI({
+        host: device.ip,
+        user: device.username,
+        password: device.password,
+        port: device.apiPort || 8728,
+        timeout: 10
+      });
+      await api.connect();
+      const result = await api.write('/ping', [`=address=${host}`, `=count=${count}`]);
+      api.close();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/router-tools/speedtest", async (req, res) => {
+    const { deviceId, target } = req.body;
+    const device = db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId) as any;
+    if (!device || device.type !== 'router') return res.status(404).json({ error: "Router not found" });
+
+    try {
+      const api = new RouterOSAPI({
+        host: device.ip,
+        user: device.username,
+        password: device.password,
+        port: device.apiPort || 8728,
+        timeout: 30
+      });
+      await api.connect();
+      // Use bandwidth-test for standard ROS, or speed-test if available
+      // Defaulting to a short bandwidth test as it's more universal
+      const result = await api.write('/tool/bandwidth-test', [
+        `=address=${target || '8.8.8.8'}`, 
+        '=duration=5s',
+        '=protocol=udp',
+        '=direction=both'
+      ]);
+      api.close();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.get("/api/router-stats/:deviceId", (req, res) => {
@@ -493,6 +569,8 @@ async function startServer() {
       const { telegramBotToken, telegramChatId } = settings;
       const devices = db.prepare("SELECT * FROM devices").all() as any[];
 
+      let routersForDnsCheck: any[] = [];
+
       for (const device of devices) {
         const result = await pingHost(device.ip);
         const newStatus = result.alive ? 'up' : 'down';
@@ -513,6 +591,44 @@ async function startServer() {
               }).catch(e => console.error(`TG Error for ${id}:`, e.message));
             }
           }
+        }
+
+        if (device.type === 'router' && result.alive) {
+          routersForDnsCheck.push(device);
+        }
+
+        // --- DHCP AUTO-SYNC ---
+        if (device.type === 'router' && result.alive && device.username && device.password) {
+          try {
+            const api = new RouterOSAPI({
+              host: device.ip,
+              user: device.username,
+              password: device.password,
+              port: device.apiPort || 8728,
+              timeout: 10
+            });
+            await api.connect();
+            const leases = await api.write('/ip/dhcp-server/lease/print');
+            
+            for (const lease of leases) {
+              const mac = lease.mac_address;
+              const ip = lease.address;
+              const name = lease.comment || lease['host-name'] || `Client ${ip}`;
+              
+              const existing = db.prepare("SELECT * FROM provisioning WHERE mac = ?").get(mac);
+              if (!existing) {
+                const id = Math.random().toString(36).substring(7);
+                db.prepare(`
+                  INSERT INTO provisioning (id, ip, mac, deviceName, speedLimit, interfaceName, arpEnabled)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)
+                `).run(id, ip, mac, name, '10M/10M', 'SALIDA', 1);
+              } else {
+                // Keep IP updated if it changed
+                db.prepare("UPDATE provisioning SET ip = ? WHERE mac = ? AND ip != ?").run(ip, mac, ip);
+              }
+            }
+            api.close();
+          } catch (e) {}
         }
 
         // Fetch Stats if it's a router and online
@@ -550,20 +666,40 @@ async function startServer() {
             // 2. Fetch Interfaces
             const interfacesList = await api.write('/interface/print');
             if (interfacesList && interfacesList.length > 0) {
+              const now = Date.now();
               for (const iface of interfacesList) {
                 const id = `${device.id}_${iface.name}`;
-                const rx = parseFloat(iface['rx-byte'] || '0') / 1024 / 1024;
-                const tx = parseFloat(iface['tx-byte'] || '0') / 1024 / 1024;
+                const rxBytes = parseFloat(iface['rx-byte'] || '0');
+                const txBytes = parseFloat(iface['tx-byte'] || '0');
+
+                let mbpsIn = 0;
+                let mbpsOut = 0;
+
+                const lastData = lastBytesStore.get(id);
+                if (lastData) {
+                  const seconds = (now - lastData.time) / 1000;
+                  if (seconds > 0) {
+                    // (Bytes * 8 = Bits) / (Seconds) / (1024*1024) = Mbps
+                    mbpsIn = ((rxBytes - lastData.rx) * 8) / (seconds * 1024 * 1024);
+                    mbpsOut = ((txBytes - lastData.tx) * 8) / (seconds * 1024 * 1024);
+                    
+                    // Sanitize against resets or negative results
+                    if (mbpsIn < 0) mbpsIn = 0;
+                    if (mbpsOut < 0) mbpsOut = 0;
+                  }
+                }
+
+                lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
 
                 db.prepare(`
                   INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                `).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', rx, tx);
+                `).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', mbpsIn, mbpsOut);
 
                 db.prepare(`
                   INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut)
                   VALUES (?, ?, ?, ?)
-                `).run(device.id, iface.name, rx, tx);
+                `).run(device.id, iface.name, mbpsIn, mbpsOut);
               }
             }
             
@@ -577,6 +713,35 @@ async function startServer() {
           }
         }
       }
+
+      // Google DNS Check From Router
+      if (routersForDnsCheck.length > 0) {
+        const primary = routersForDnsCheck[0];
+        try {
+          const api = new RouterOSAPI({
+            host: primary.ip,
+            user: primary.username,
+            password: primary.password,
+            port: primary.apiPort || 8728,
+            timeout: 5
+          });
+          await api.connect();
+          const googlePing = await api.write('/ping', ['=address=8.8.8.8', '=count=1']);
+          api.close();
+          const latency = googlePing[0]?.time ? parseFloat(googlePing[0].time) * 1000 : 0;
+          if (latency > 0) {
+            const current = getSetting("global") || {};
+            setSetting("global", { ...current, googleLatency: Math.round(latency) });
+          }
+        } catch (e) {}
+      } else {
+        // Fallback to local ping if no routers are up
+        const res = await pingHost("8.8.8.8");
+        const current = getSetting("global") || {};
+        setSetting("global", { ...current, googleLatency: Math.round(res.time) });
+      }
+
+      console.log(`Monitor: Cycle finished at ${new Date().toISOString()}`);
     } catch (err) {
       console.error("Monitor error", err);
     }
