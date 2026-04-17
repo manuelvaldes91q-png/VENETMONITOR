@@ -332,31 +332,34 @@ async function startServer() {
       const enrichedLeases = leases.map(lease => {
         const ip = lease.address;
         const mac = lease.mac_address;
-        const name = lease.comment || lease['host-name'] || `Client ${ip}`;
         
-        const matchingQueue = queues.find(q => q.target && q.target.includes(ip));
+        // Enhance queue matching
+        const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.includes(ip)));
         const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
         
         const matchingArp = arps.find(a => a.address === ip);
         const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
 
-        // Sync to DB in background
-        const existing = db.prepare("SELECT * FROM provisioning WHERE mac = ?").get(mac);
+        // Sync to DB logic with name protection
+        const existing = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(mac) as any;
+        const routerName = lease.comment || lease['host-name'];
+        const finalName = routerName || (existing ? existing.deviceName : `Client ${ip}`);
+
         if (!existing) {
           const id = Math.random().toString(36).substring(7);
           db.prepare(`
             INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(id, ip, mac, name, device.id, speedLimit, 'SALIDA', arpEnabled);
+          `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
         } else {
           db.prepare(`
             UPDATE provisioning 
             SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
             WHERE mac = ?
-          `).run(ip, name, device.id, speedLimit, arpEnabled, mac);
+          `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
         }
 
-        return { ...lease, speedLimit, arpEnabled, comment: name };
+        return { ...lease, speedLimit, arpEnabled, comment: finalName };
       });
 
       res.json(enrichedLeases);
@@ -670,188 +673,173 @@ async function startServer() {
   // Monitoring Loop
   const monitorDevices = async () => {
     try {
+      console.log(`Monitor: Cycle started at ${new Date().toISOString()}`);
       const settings = getSetting("global") || {};
       const { telegramBotToken, telegramChatId } = settings;
       const devices = db.prepare("SELECT * FROM devices").all() as any[];
 
-      let routersForDnsCheck: any[] = [];
+      // Parallelize monitoring to avoid sequential blocking
+      await Promise.allSettled(devices.map(async (device) => {
+        try {
+          const result = await pingHost(device.ip);
+          const newStatus = result.alive ? 'up' : 'down';
 
-      for (const device of devices) {
-        const result = await pingHost(device.ip);
-        const newStatus = result.alive ? 'up' : 'down';
+          if (device.status !== newStatus) {
+            db.prepare("UPDATE devices SET status = ?, lastSeen = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, device.id);
+            db.prepare("INSERT INTO logs (deviceId, status, latency) VALUES (?, ?, ?)").run(device.id, newStatus, result.alive ? result.time : 0);
 
-        if (device.status !== newStatus) {
-          db.prepare("UPDATE devices SET status = ?, lastSeen = CURRENT_TIMESTAMP WHERE id = ?").run(newStatus, device.id);
-          db.prepare("INSERT INTO logs (deviceId, status, latency) VALUES (?, ?, ?)").run(device.id, newStatus, result.alive ? result.time : 0);
-
-          if (device.telegramEnabled && telegramBotToken && telegramChatId) {
-            const message = `<b>🚨 ALERTA: ${device.name}</b>\nEstado: ${newStatus.toUpperCase()}`;
-            const chatIds = telegramChatId.split(',').map((id: string) => id.trim());
-            
-            for (const id of chatIds) {
-              axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
-                chat_id: id,
-                text: message,
-                parse_mode: 'HTML'
-              }).catch(e => console.error(`TG Error for ${id}:`, e.message));
+            if (device.telegramEnabled && telegramBotToken && telegramChatId) {
+              const message = `<b>🚨 ALERTA: ${device.name}</b>\nEstado: ${newStatus.toUpperCase()}`;
+              const chatIds = telegramChatId.split(',').map((id: string) => id.trim());
+              chatIds.forEach(id => {
+                axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+                  chat_id: id,
+                  text: message,
+                  parse_mode: 'HTML'
+                }).catch(e => console.error(`TG Error for ${id}:`, e.message));
+              });
             }
           }
-        }
 
-        if (device.type === 'router' && result.alive) {
-          routersForDnsCheck.push(device);
-        }
-
-        // --- MASTER AUTO-SYNC (Leases, Queues, ARP) ---
-        if (device.type === 'router' && result.alive && device.username && device.password) {
-          try {
-            const api = new RouterOSAPI({
-              host: device.ip,
-              user: device.username,
-              password: device.password,
-              port: device.apiPort || 8728,
-              timeout: 15
-            });
-            await api.connect();
-            
-            // Fetch everything we need for a full sync
-            const leases = await api.write('/ip/dhcp-server/lease/print');
-            const queues = await api.write('/queue/simple/print');
-            const arps = await api.write('/ip/arp/print');
-            
-            for (const lease of leases) {
-              const mac = lease.mac_address;
-              const ip = lease.address;
+          // --- MASTER AUTO-SYNC (Leases, Queues, ARP) ---
+          if (device.type === 'router' && result.alive && device.username && device.password) {
+            try {
+              const api = new RouterOSAPI({
+                host: device.ip,
+                user: device.username,
+                password: device.password,
+                port: device.apiPort || 8728,
+                timeout: 20
+              });
+              await api.connect();
               
-              // 1. Determine Name (Priority: Lease Comment > Hostname > Default)
-              const name = lease.comment || lease['host-name'] || `Client ${ip}`;
+              const leases = await api.write('/ip/dhcp-server/lease/print');
+              const queues = await api.write('/queue/simple/print');
+              const arps = await api.write('/ip/arp/print');
               
-              // 2. Find Speed Limit from Simple Queues
-              const matchingQueue = queues.find(q => q.target && q.target.includes(ip));
-              const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
-              
-              // 3. Determine ARP Status (Enabled/Cut)
-              // We assume 'Cut' if there's no active/enabled ARP entry for this IP/MAC combo
-              // or if the entry is explicitly disabled (Mikrotik property 'disabled')
-              const matchingArp = arps.find(a => a.address === ip);
-              const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
-              
-              const existing = db.prepare("SELECT * FROM provisioning WHERE mac = ?").get(mac);
-              
-              if (!existing) {
-                const id = Math.random().toString(36).substring(7);
-                db.prepare(`
-                  INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                `).run(id, ip, mac, name, device.id, speedLimit, 'SALIDA', arpEnabled);
-              } else {
-                // Update existing record with Mikrotik's truth
-                db.prepare(`
-                  UPDATE provisioning 
-                  SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
-                  WHERE mac = ?
-                `).run(ip, name, device.id, speedLimit, arpEnabled, mac);
-              }
-            }
-            api.close();
-          } catch (e) {
-            console.error(`Master Sync Error (${device.name}):`, e.message);
-          }
-        }
+              // Use a Transaction for batch DB operations to avoid blocking the event loop
+              const syncTransaction = db.transaction((leaseData) => {
+                for (const item of leaseData) {
+                  const { mac, ip, routerComment, routerHost, speedLimit, arpEnabled } = item;
+                  const existing = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(mac) as any;
+                  
+                  // Prioritize MikroTik comment, then existing DB name, then MikroTik hostname
+                  const finalName = routerComment || (existing ? existing.deviceName : routerHost) || `Client ${ip}`;
 
-        // Fetch Stats if it's a router and online
-        if (device.type === 'router' && result.alive && device.username && device.password) {
-          try {
-            const api = new RouterOSAPI({
-              host: device.ip,
-              user: device.username,
-              password: device.password,
-              port: device.apiPort || 8728,
-              timeout: 5
-            });
-
-            await api.connect();
-
-            // 1. Fetch Resources
-            const resources = await api.write('/system/resource/print');
-            if (resources && resources.length > 0) {
-              const data = resources[0];
-              const cpu = parseFloat(data['cpu-load'] || '0');
-              const ram = parseFloat(data['free-memory'] || '0') / 1024 / 1024;
-              const totalRam = parseFloat(data['total-memory'] || '0') / 1024 / 1024;
-
-              db.prepare(`
-                INSERT OR REPLACE INTO router_stats (deviceId, cpuUsage, ramFree, ramTotal, uptime, lastUpdate)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-              `).run(device.id, cpu, ram, totalRam, data['uptime'] || '');
-
-              db.prepare(`
-                INSERT INTO resource_history (deviceId, cpuUsage, ramFree)
-                VALUES (?, ?, ?)
-              `).run(device.id, cpu, ram);
-            }
-
-            // 2. Fetch Interfaces
-            const interfacesList = await api.write('/interface/print');
-            if (interfacesList && interfacesList.length > 0) {
-              const now = Date.now();
-              for (const iface of interfacesList) {
-                const id = `${device.id}_${iface.name}`;
-                const rxBytes = parseFloat(iface['rx-byte'] || '0');
-                const txBytes = parseFloat(iface['tx-byte'] || '0');
-
-                let mbpsIn = 0;
-                let mbpsOut = 0;
-
-                const lastData = lastBytesStore.get(id);
-                if (lastData) {
-                  const seconds = (now - lastData.time) / 1000;
-                  if (seconds > 0) {
-                    // (Bytes * 8 = Bits) / (Seconds) / (1024*1024) = Mbps
-                    mbpsIn = ((rxBytes - lastData.rx) * 8) / (seconds * 1024 * 1024);
-                    mbpsOut = ((txBytes - lastData.tx) * 8) / (seconds * 1024 * 1024);
-                    
-                    // Sanitize against resets or negative results
-                    if (mbpsIn < 0) mbpsIn = 0;
-                    if (mbpsOut < 0) mbpsOut = 0;
+                  if (!existing) {
+                    const id = Math.random().toString(36).substring(7);
+                    db.prepare(`
+                      INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
+                  } else {
+                    db.prepare(`
+                      UPDATE provisioning 
+                      SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
+                      WHERE mac = ?
+                    `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
                   }
                 }
+              });
 
-                lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
+              const leaseItems = leases.map(lease => {
+                const ip = lease.address;
+                const routerComment = lease.comment;
+                const routerHost = lease['host-name'];
+                
+                // Enhanced queue matching
+                const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.includes(ip)));
+                const speedLimit = matchingQueue ? matchingQueue.max_limit : '10M/10M';
+                
+                const matchingArp = arps.find(a => a.address === ip);
+                const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+                
+                return { mac: lease.mac_address, ip, routerComment, routerHost, speedLimit, arpEnabled };
+              });
+
+              syncTransaction(leaseItems);
+              
+              // 1. Fetch Resources for stats
+              const resources = await api.write('/system/resource/print');
+              if (resources && resources.length > 0) {
+                const data = resources[0];
+                const cpu = parseFloat(data['cpu-load'] || '0');
+                const ram = parseFloat(data['free-memory'] || '0') / 1024 / 1024;
+                const totalRam = parseFloat(data['total-memory'] || '0') / 1024 / 1024;
 
                 db.prepare(`
-                  INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
-                  VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                `).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', mbpsIn, mbpsOut);
+                  INSERT OR REPLACE INTO router_stats (deviceId, cpuUsage, ramFree, ramTotal, uptime, lastUpdate)
+                  VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `).run(device.id, cpu, ram, totalRam, data['uptime'] || '');
 
                 db.prepare(`
-                  INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut)
-                  VALUES (?, ?, ?, ?)
-                `).run(device.id, iface.name, mbpsIn, mbpsOut);
+                  INSERT INTO resource_history (deviceId, cpuUsage, ramFree)
+                  VALUES (?, ?, ?)
+                `).run(device.id, cpu, ram);
               }
+
+              // 2. Fetch Interfaces for traffic
+              const interfacesList = await api.write('/interface/print');
+              if (interfacesList && interfacesList.length > 0) {
+                const now = Date.now();
+                for (const iface of interfacesList) {
+                  const id = `${device.id}_${iface.name}`;
+                  const rxBytes = parseFloat(iface['rx-byte'] || '0');
+                  const txBytes = parseFloat(iface['tx-byte'] || '0');
+
+                  let mbpsIn = 0;
+                  let mbpsOut = 0;
+
+                  const lastData = lastBytesStore.get(id);
+                  if (lastData) {
+                    const seconds = (now - lastData.time) / 1000;
+                    if (seconds > 0) {
+                      mbpsIn = ((rxBytes - lastData.rx) * 8) / (seconds * 1024 * 1024);
+                      mbpsOut = ((txBytes - lastData.tx) * 8) / (seconds * 1024 * 1024);
+                      if (mbpsIn < 0) mbpsIn = 0;
+                      if (mbpsOut < 0) mbpsOut = 0;
+                    }
+                  }
+
+                  lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
+
+                  db.prepare(`
+                    INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                  `).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', mbpsIn, mbpsOut);
+
+                  db.prepare(`
+                    INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut)
+                    VALUES (?, ?, ?, ?)
+                  `).run(device.id, iface.name, mbpsIn, mbpsOut);
+                }
+              }
+
+              api.close();
+            } catch (err: any) {
+              console.error(`MikroTik Loop Error (${device.name}):`, err.message);
             }
-            
-            // Cleanup history older than 7 days to save VPS disk/bandwidth
-            db.prepare("DELETE FROM traffic_history WHERE timestamp < datetime('now', '-7 days')").run();
-            db.prepare("DELETE FROM resource_history WHERE timestamp < datetime('now', '-7 days')").run();
-
-            api.close();
-          } catch (apiErr: any) {
-            console.error(`MikroTik API Error (${device.name}):`, apiErr.message);
           }
+        } catch (deviceErr) {
+          console.error(`Device Monitor Error (${device.name}):`, deviceErr);
         }
-      }
+      }));
 
-      // Google DNS Check From Router
-      if (routersForDnsCheck.length > 0) {
-        const primary = routersForDnsCheck[0];
+      // Cleanup history older than 7 days
+      db.prepare("DELETE FROM traffic_history WHERE timestamp < datetime('now', '-7 days')").run();
+      db.prepare("DELETE FROM resource_history WHERE timestamp < datetime('now', '-7 days')").run();
+
+      // Google DNS Check (using globalStats logic)
+      const upRouters = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up'").all() as any[];
+      if (upRouters.length > 0) {
+        const primary = upRouters[0];
         try {
           const api = new RouterOSAPI({
             host: primary.ip,
             user: primary.username,
             password: primary.password,
             port: primary.apiPort || 8728,
-            timeout: 5
+            timeout: 10
           });
           await api.connect();
           const googlePing = await api.write('/ping', ['=address=8.8.8.8', '=count=1']);
@@ -860,13 +848,9 @@ async function startServer() {
           if (latency > 0) {
             const current = getSetting("global") || {};
             setSetting("global", { ...current, googleLatency: Math.round(latency), googleLatSource: primary.name });
-            console.log(`DNS Check: Latency ${latency}ms verified from MikroTik: ${primary.name}`);
           }
-        } catch (e) {
-          console.error(`DNS Check Error (MikroTik ${primary.name}):`, e instanceof Error ? e.message : String(e));
-        }
+        } catch (e) {}
       } else {
-        // Fallback to local ping if no routers are up
         const res = await pingHost("8.8.8.8");
         const current = getSetting("global") || {};
         setSetting("global", { ...current, googleLatency: Math.round(res.time), googleLatSource: "VPS (Fallback)" });
@@ -874,7 +858,7 @@ async function startServer() {
 
       console.log(`Monitor: Cycle finished at ${new Date().toISOString()}`);
     } catch (err) {
-      console.error("Monitor error", err);
+      console.error("Critical Monitor error", err);
     }
   };
 
