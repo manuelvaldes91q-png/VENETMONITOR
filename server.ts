@@ -8,7 +8,8 @@ import cron from "node-cron";
 import FormData from "form-data";
 import Database from "better-sqlite3";
 import fs from "fs";
-const MikroNode = require('mikrotik-node');
+import { RouterOSAPI } from 'node-routeros';
+import { GoogleGenAI, Type } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,6 +73,23 @@ db.exec(`
     lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS traffic_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deviceId TEXT,
+    interfaceName TEXT,
+    trafficIn REAL,
+    trafficOut REAL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deviceId TEXT,
+    cpuUsage REAL,
+    ramFree REAL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS backups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     deviceId TEXT,
@@ -106,6 +124,23 @@ const setSetting = (key: string, value: any) => {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(value));
 };
 
+// Initialize Gemini AI
+const genAI: any = (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY") 
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) 
+  : null;
+
+// --- Local Neural Engine (Integrated AI) ---
+const runLocalAnalysis = (devices: any[], logs: any[]) => {
+  const downDevices = devices.filter(d => d.status === 'down');
+  const avgLatency = logs.length > 0 ? logs.reduce((acc, curr) => acc + (curr.latency || 0), 0) / logs.length : 0;
+  let intensity = 2, color = "#00ff00", summary = "Vigilancia local activa: Óptima.", intel = "No se detectan fugas de datos.", rec = "Todo estable.";
+  if (downDevices.length > 0) {
+    intensity = 8; color = "#ff4400"; summary = `CRÍTICO: ${downDevices.length} nodos caídos.`;
+    intel = "Ruptura en el flujo detectada."; rec = "Verificar suministro eléctrico.";
+  } else if (avgLatency > 150) { intensity = 5; color = "#ffaa00"; summary = "ALERTA: Latencia alta."; rec = "Revisar alineación de antenas."; }
+  return { statusSummary: summary, intelligence: intel, recommendation: rec, pulseColor: color, pulseIntensity: intensity };
+};
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -138,12 +173,15 @@ async function startServer() {
   });
 
   app.patch("/api/devices/:id", (req, res) => {
-    const { telegramEnabled, status } = req.body;
+    const { telegramEnabled, status, ip } = req.body;
     if (telegramEnabled !== undefined) {
       db.prepare("UPDATE devices SET telegramEnabled = ? WHERE id = ?").run(telegramEnabled ? 1 : 0, req.params.id);
     }
     if (status !== undefined) {
       db.prepare("UPDATE devices SET status = ? WHERE id = ?").run(status, req.params.id);
+    }
+    if (ip !== undefined) {
+      db.prepare("UPDATE devices SET ip = ? WHERE id = ?").run(ip, req.params.id);
     }
     res.json({ success: true });
   });
@@ -165,8 +203,13 @@ async function startServer() {
   });
 
   app.patch("/api/provisioning/:id", (req, res) => {
-    const { arpEnabled } = req.body;
-    db.prepare("UPDATE provisioning SET arpEnabled = ? WHERE id = ?").run(arpEnabled ? 1 : 0, req.params.id);
+    const { arpEnabled, speedLimit } = req.body;
+    if (arpEnabled !== undefined) {
+      db.prepare("UPDATE provisioning SET arpEnabled = ? WHERE id = ?").run(arpEnabled ? 1 : 0, req.params.id);
+    }
+    if (speedLimit !== undefined) {
+      db.prepare("UPDATE provisioning SET speedLimit = ? WHERE id = ?").run(speedLimit, req.params.id);
+    }
     res.json({ success: true });
   });
 
@@ -198,9 +241,123 @@ async function startServer() {
     res.json({ stats, interfaces });
   });
 
+  app.get("/api/router-history/:id", (req, res) => {
+    const ifaceName = req.query.interface as string || 'ether1';
+    const range = req.query.range as string || '24h';
+    
+    let limit = 50;
+    if (range === '5m') limit = 5;
+    if (range === '8h') limit = 100;
+    if (range === '24h') limit = 300;
+
+    const traffic = db.prepare(`
+      SELECT trafficIn, trafficOut, timestamp 
+      FROM traffic_history 
+      WHERE deviceId = ? AND interfaceName = ? 
+      ORDER BY timestamp DESC LIMIT ?
+    `).all(req.params.id, ifaceName, limit);
+    
+    const resources = db.prepare(`
+      SELECT cpuUsage, ramFree, timestamp 
+      FROM resource_history 
+      WHERE deviceId = ? 
+      ORDER BY timestamp DESC LIMIT ?
+    `).all(req.params.id, limit);
+
+    res.json({ 
+      traffic: traffic.reverse(), 
+      resources: resources.reverse() 
+    });
+  });
+
   app.post("/api/oracle", (req, res) => {
     setSetting("oracle", req.body);
     res.json({ success: true });
+  });
+
+  app.get("/api/global-stats", async (req, res) => {
+    const googlePing = await pingHost("8.8.8.8");
+    res.json({
+      googleLatency: googlePing.alive ? googlePing.time : null
+    });
+  });
+
+  // Gemini AI Native Routes
+  app.post("/api/ai/analyze", async (req, res) => {
+    const { devices, logs } = req.body;
+    
+    // If no Gemini, use Integrated Local AI
+    if (!genAI) {
+      return res.json(runLocalAnalysis(devices || [], logs || []));
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-3.1-pro-preview" });
+    const prompt = `
+      Eres el "Oráculo de Red", una inteligencia artificial avanzada diseñada para gestionar infraestructuras MikroTik.
+      Analiza los siguientes datos de red y proporciona un resumen ejecutivo "inovador" y futurista.
+      
+      Dispositivos: ${JSON.stringify(devices)}
+      Logs recientes: ${JSON.stringify((logs || []).slice(0, 20))}
+      
+      Tu respuesta debe ser JSON:
+      {
+        "statusSummary": "Frase corta potente",
+        "intelligence": "Análisis profundo",
+        "recommendation": "Acción proactiva",
+        "pulseColor": "Hexadecimal",
+        "pulseIntensity": numero 1-10
+      }
+    `;
+
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              statusSummary: { type: Type.STRING },
+              intelligence: { type: Type.STRING },
+              recommendation: { type: Type.STRING },
+              pulseColor: { type: Type.STRING },
+              pulseIntensity: { type: Type.NUMBER }
+            },
+            required: ["statusSummary", "intelligence", "recommendation", "pulseColor", "pulseIntensity"]
+          }
+        }
+      });
+      res.json(JSON.parse(result.response.text()));
+    } catch (error: any) {
+      console.error("AI Analysis Error:", error.message);
+      res.status(500).json({ error: "Neural link failed" });
+    }
+  });
+
+  app.post("/api/ai/ask", async (req, res) => {
+    const { question, context } = req.body;
+    
+    // If no Gemini, use Integrated Heuristic Link
+    if (!genAI) {
+      const q = question.toLowerCase();
+      if (q.includes("estado")) return res.json({ text: `Motor local reporta: ${runLocalAnalysis(context.devices || [], context.logs || []).statusSummary}` });
+      return res.json({ text: "Consulta técnica procesada por el Núcleo Local. Se sugiere verificar logs manuales en ausencia del enlace neuronal profundo." });
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+    const prompt = `
+      Eres el Oráculo de Red. El usuario pregunta: "${question}"
+      Contexto de la red: ${JSON.stringify(context)}
+      Responde de forma concisa, técnica pero con un tono futurista y autoritario.
+    `;
+
+    try {
+      const result = await model.generateContent(prompt);
+      res.json({ text: result.response.text() });
+    } catch (error: any) {
+      console.error("AI Ask Error:", error.message);
+      res.status(500).json({ error: "Neural link failed" });
+    }
   });
 
   // Ping utility
@@ -346,56 +503,75 @@ async function startServer() {
 
           if (device.telegramEnabled && telegramBotToken && telegramChatId) {
             const message = `<b>🚨 ALERTA: ${device.name}</b>\nEstado: ${newStatus.toUpperCase()}`;
-            await axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
-              chat_id: telegramChatId,
-              text: message,
-              parse_mode: 'HTML'
-            }).catch(e => console.error("TG Error", e.message));
+            const chatIds = telegramChatId.split(',').map((id: string) => id.trim());
+            
+            for (const id of chatIds) {
+              axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+                chat_id: id,
+                text: message,
+                parse_mode: 'HTML'
+              }).catch(e => console.error(`TG Error for ${id}:`, e.message));
+            }
           }
         }
 
         // Fetch Stats if it's a router and online
         if (device.type === 'router' && result.alive && device.username && device.password) {
           try {
-            const connection = new MikroNode(device.ip, device.username, device.password, { 
+            const api = new RouterOSAPI({
+              host: device.ip,
+              user: device.username,
+              password: device.password,
               port: device.apiPort || 8728,
-              timeout: 10
+              timeout: 5
             });
-            const client = await connection.connect();
-            
-            // 1. Fetch Resources
-            const resData = await client.write('/system/resource/print');
-            const data = resData[0];
-            
-            db.prepare(`
-              INSERT OR REPLACE INTO router_stats (deviceId, cpuUsage, ramFree, ramTotal, uptime, lastUpdate)
-              VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(
-              device.id,
-              parseFloat(data['cpu-load'] || '0'),
-              parseFloat(data['free-memory'] || '0') / 1024 / 1024,
-              parseFloat(data['total-memory'] || '0') / 1024 / 1024,
-              data['uptime'] || ''
-            );
 
-            // 2. Fetch Interfaces
-            const interfaces = await client.write('/interface/print');
-            for (const iface of interfaces) {
-              const id = `${device.id}_${iface.name}`;
+            await api.connect();
+
+            // 1. Fetch Resources
+            const resources = await api.write('/system/resource/print');
+            if (resources && resources.length > 0) {
+              const data = resources[0];
+              const cpu = parseFloat(data['cpu-load'] || '0');
+              const ram = parseFloat(data['free-memory'] || '0') / 1024 / 1024;
+              const totalRam = parseFloat(data['total-memory'] || '0') / 1024 / 1024;
+
               db.prepare(`
-                INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-              `).run(
-                id,
-                device.id,
-                iface.name,
-                iface.running === 'true' ? 'up' : 'down',
-                parseFloat(iface['rx-byte'] || '0') / 1024 / 1024,
-                parseFloat(iface['tx-byte'] || '0') / 1024 / 1024
-              );
+                INSERT OR REPLACE INTO router_stats (deviceId, cpuUsage, ramFree, ramTotal, uptime, lastUpdate)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              `).run(device.id, cpu, ram, totalRam, data['uptime'] || '');
+
+              db.prepare(`
+                INSERT INTO resource_history (deviceId, cpuUsage, ramFree)
+                VALUES (?, ?, ?)
+              `).run(device.id, cpu, ram);
             }
 
-            client.close();
+            // 2. Fetch Interfaces
+            const interfacesList = await api.write('/interface/print');
+            if (interfacesList && interfacesList.length > 0) {
+              for (const iface of interfacesList) {
+                const id = `${device.id}_${iface.name}`;
+                const rx = parseFloat(iface['rx-byte'] || '0') / 1024 / 1024;
+                const tx = parseFloat(iface['tx-byte'] || '0') / 1024 / 1024;
+
+                db.prepare(`
+                  INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate)
+                  VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', rx, tx);
+
+                db.prepare(`
+                  INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut)
+                  VALUES (?, ?, ?, ?)
+                `).run(device.id, iface.name, rx, tx);
+              }
+            }
+            
+            // Cleanup history older than 7 days to save VPS disk/bandwidth
+            db.prepare("DELETE FROM traffic_history WHERE timestamp < datetime('now', '-7 days')").run();
+            db.prepare("DELETE FROM resource_history WHERE timestamp < datetime('now', '-7 days')").run();
+
+            api.close();
           } catch (apiErr: any) {
             console.error(`MikroTik API Error (${device.name}):`, apiErr.message);
           }
@@ -406,7 +582,7 @@ async function startServer() {
     }
   };
 
-  setInterval(monitorDevices, 30000);
+  setInterval(monitorDevices, 120000); // 2 minutes monitoring as a balance for 1GB VPS limit
 
   // Vite setup
   if (process.env.NODE_ENV !== "production") {

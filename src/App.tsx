@@ -25,9 +25,10 @@ import {
   Database,
   Download,
   History,
-  Lock
+  Lock,
+  Settings2
 } from 'lucide-react';
-import { analyzeNetworkHealth } from './services/geminiService';
+import { analyzeNetworkHealth, askOracle as askOracleAI } from './services/geminiService';
 import { 
   LineChart, 
   Line, 
@@ -106,6 +107,11 @@ export default function App() {
   const [oracleData, setOracleData] = useState<any>(null);
   const [oracleLoading, setOracleLoading] = useState(false);
 
+  // Expose setActiveTab for global navigation
+  useEffect(() => {
+    (window as any).setActiveTab = setActiveTab;
+  }, []);
+
   // Auth check (Simple local storage for demo/VPS)
   useEffect(() => {
     const saved = localStorage.getItem('venet_auth');
@@ -152,7 +158,7 @@ export default function App() {
   useEffect(() => {
     if (isLoggedIn) {
       fetchData();
-      const interval = setInterval(fetchData, 30000); // Poll every 30s
+      const interval = setInterval(fetchData, 120000); // Poll every 2 mins to save bandwidth
       return () => clearInterval(interval);
     }
   }, [isLoggedIn]);
@@ -175,6 +181,10 @@ export default function App() {
     const interval = setInterval(runAnalysis, 1800000);
     return () => clearInterval(interval);
   }, [isLoggedIn, devices.length]);
+
+  const askOracle = async (question: string) => {
+    return await askOracleAI(question, { devices, logs });
+  };
 
   if (!isLoggedIn) {
     return (
@@ -210,38 +220,45 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-gray-100 font-sans overflow-hidden">
-      <Toaster position="top-right" theme="dark" />
+    <div className="flex h-screen hardware-grid text-gray-100 font-sans overflow-hidden relative">
+      <div className="scanline" />
+      <Toaster position="top-right" theme="dark" richColors />
       
-      {/* Sidebar */}
-      <aside className="w-64 bg-[#111] border-r border-[#262626] flex flex-col">
-        <div className="p-6 border-b border-[#262626] flex items-center gap-3">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <Network className="w-6 h-6 text-white" />
+      {/* Sidebar for Desktop */}
+      <aside className="hidden md:flex w-72 bg-[#0a0a0a] border-r border-[#1a1a1a] flex-col glass-card relative z-10">
+        <div className="p-8 border-b border-[#1a1a1a] relative group">
+          <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <h1 className="text-2xl font-black tracking-tighter text-white flex items-center gap-3">
+            <Zap className="w-8 h-8 text-blue-500 vigilance-pulse" />
+            <span className="neon-text-blue">VENET <span className="text-blue-500">PRO</span></span>
+          </h1>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest leading-none">Núcleo Vigilante Activo</span>
           </div>
-          <h1 className="font-bold text-xl tracking-tight">VENET <span className="text-blue-500">AI</span></h1>
         </div>
         
         <nav className="flex-1 p-4 space-y-2">
           {[
             { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+            { id: 'oracle', icon: Brain, label: 'Oráculo AI' },
             { id: 'infrastructure', icon: Server, label: 'Infraestructura' },
             { id: 'antennas', icon: Wifi, label: 'Antenas' },
             { id: 'provisioning', icon: Zap, label: 'Aprovisionamiento' },
-            { id: 'logs', icon: Activity, label: 'Logs de Eventos' },
-            { id: 'settings', icon: SettingsIcon, label: 'Configuración' },
+            { id: 'logs', icon: Activity, label: 'Logs' },
+            { id: 'settings', icon: SettingsIcon, label: 'Ajustes' },
           ].map((item) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-300 ${
                 activeTab === item.id 
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' 
-                : 'text-gray-400 hover:bg-[#1a1a1a] hover:text-white'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                : 'text-zinc-500 hover:bg-[#1a1a1a] hover:text-white'
               }`}
             >
               <item.icon className="w-5 h-5" />
-              <span className="font-medium">{item.label}</span>
+              <span className="font-bold text-xs uppercase tracking-wider">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -249,25 +266,54 @@ export default function App() {
         <div className="p-4 border-t border-[#262626]">
           <button 
             onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all"
+            className="w-full flex items-center gap-3 px-4 py-3 text-zinc-500 hover:text-red-500 hover:bg-red-500/5 rounded-xl transition-all"
           >
             <LogOut className="w-5 h-5" />
-            <span className="font-medium">Cerrar Sesión</span>
+            <span className="font-bold text-xs uppercase tracking-wider">Cerrar Sesión</span>
           </button>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8 bg-[#0a0a0a]">
-        <AnimatePresence mode="wait">
-          {activeTab === 'dashboard' && <DashboardView devices={devices} logs={logs} oracleData={oracleData} oracleLoading={oracleLoading} />}
-          {activeTab === 'infrastructure' && <InfrastructureView mode="mikrotik" devices={devices.filter(d => d.type !== 'antenna')} onRefresh={fetchData} />}
-          {activeTab === 'antennas' && <InfrastructureView mode="antennas" devices={devices.filter(d => d.type === 'antenna')} onRefresh={fetchData} />}
-          {activeTab === 'provisioning' && <ProvisioningView provisioning={provisioning} onRefresh={fetchData} />}
-          {activeTab === 'logs' && <LogsView logs={logs} devices={devices} />}
-          {activeTab === 'settings' && <SettingsView settings={settings} onRefresh={fetchData} />}
-        </AnimatePresence>
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto p-4 md:p-10 relative">
+        <div className="max-w-7xl mx-auto h-full">
+          <AnimatePresence mode="wait">
+            {activeTab === 'dashboard' && <DashboardView key="dash" devices={devices} logs={logs} oracleData={oracleData} />}
+            {activeTab === 'oracle' && <OracleView key="oracle" devices={devices} logs={logs} oracleData={oracleData} loading={oracleLoading} onAsk={askOracle} />}
+            {activeTab === 'infrastructure' && <InfrastructureView key="infra" mode="mikrotik" devices={devices.filter((d: any) => d.type !== 'antenna')} onRefresh={fetchData} />}
+            {activeTab === 'antennas' && <InfrastructureView key="ant" mode="antennas" devices={devices.filter((d: any) => d.type === 'antenna')} onRefresh={fetchData} />}
+            {activeTab === 'provisioning' && <ProvisioningView key="prov" provisioning={provisioning} onRefresh={fetchData} />}
+            {activeTab === 'logs' && <LogsView key="logs" logs={logs} devices={devices} />}
+            {activeTab === 'settings' && <SettingsView key="settings" settings={settings} onRefresh={fetchData} />}
+          </AnimatePresence>
+        </div>
       </main>
+
+      {/* Bottom Nav for Mobile */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-[#0a0a0a]/80 backdrop-blur-2xl border-t border-[#262626] z-50 px-2 py-3">
+        <div className="flex justify-between items-center max-w-sm mx-auto">
+          {[
+            { id: 'dashboard', icon: LayoutDashboard },
+            { id: 'oracle', icon: Brain },
+            { id: 'infrastructure', icon: Server },
+            { id: 'antennas', icon: Wifi },
+            { id: 'provisioning', icon: Zap },
+            { id: 'settings', icon: SettingsIcon },
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`p-3 rounded-2xl transition-all flex flex-col items-center gap-1 ${
+                activeTab === item.id 
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                : 'text-zinc-600'
+              }`}
+            >
+              <item.icon className="w-5 h-5 md:w-6 md:h-6" />
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -275,16 +321,33 @@ export default function App() {
 // --- Sub-Views ---
 
 function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
-  const stats = useMemo(() => {
-    const up = devices.filter((d: any) => d.status === 'up').length;
-    const down = devices.filter((d: any) => d.status === 'down').length;
-    return { up, down, total: devices.length };
-  }, [devices]);
-
+  const [globalStats, setGlobalStats] = useState<any>(null);
+  const [selectedInterface, setSelectedInterface] = useState<string>('WAN');
+  const [selectedRange, setSelectedRange] = useState<string>('24h');
   const [routerStats, setRouterStats] = useState<any[]>([]);
+  const [historyData, setHistoryData] = useState<any>(null);
+
+  const stats = useMemo(() => {
+    const routers = devices.filter((d: any) => d.type === 'router');
+    const antennas = devices.filter((d: any) => d.type === 'antenna');
+    
+    return {
+      routersUp: routers.filter((d: any) => d.status === 'up').length,
+      routersDown: routers.filter((d: any) => d.status === 'down').length,
+      antennasUp: antennas.filter((d: any) => d.status === 'up').length,
+      antennasDown: antennas.filter((d: any) => d.status === 'down').length,
+    };
+  }, [devices]);
 
   useEffect(() => {
     const fetchAllStats = async () => {
+      // 1. Fetch Google DNS Latency
+      try {
+        const gRes = await axios.get('/api/global-stats');
+        setGlobalStats(gRes.data);
+      } catch (e) {}
+
+      // 2. Fetch Router Stats
       const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
       const results = await Promise.all(
         routers.map(async (r: any) => {
@@ -297,174 +360,290 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
       setRouterStats(results.filter(r => r !== null));
     };
     fetchAllStats();
-    const inv = setInterval(fetchAllStats, 10000);
+    const inv = setInterval(fetchAllStats, 60000); // Poll every 1 min to save bandwidth
     return () => clearInterval(inv);
   }, [devices]);
 
+  const activeRouter = routerStats[0];
+
+  useEffect(() => {
+    if (!activeRouter) return;
+    const fetchHistory = async () => {
+      try {
+        const res = await axios.get(`/api/router-history/${activeRouter.deviceId}?interface=${selectedInterface}&range=${selectedRange}`);
+        setHistoryData(res.data);
+      } catch (e) {}
+    };
+    fetchHistory();
+    const inv = setInterval(fetchHistory, 60000);
+    return () => clearInterval(inv);
+  }, [activeRouter?.deviceId, selectedInterface, selectedRange]);
+
+  const overallHealth = useMemo(() => {
+    if (devices.length === 0) return 0;
+    const upCount = devices.filter(d => d.status === 'up').length;
+    const latencyFactor = globalStats?.googleLatency ? Math.max(0, 100 - (globalStats.googleLatency / 2)) : 50;
+    const upFactor = (upCount / devices.length) * 100;
+    return Math.round((upFactor * 0.7) + (latencyFactor * 0.3));
+  }, [devices, globalStats]);
+
   return (
     <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
-      className="space-y-8"
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="space-y-6 pb-24 md:pb-8"
     >
-      <header>
-        <h2 className="text-3xl font-bold tracking-tight text-white">Dashboard Central</h2>
-        <p className="text-zinc-400">Estado en tiempo real de tu red MikroTik y enlaces VPS.</p>
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-6">
+          <div className="relative w-16 h-16 flex items-center justify-center">
+            <svg className="w-16 h-16 transform -rotate-90">
+              <circle cx="32" cy="32" r="28" fill="transparent" stroke="currentColor" strokeWidth="4" className="text-zinc-900" />
+              <circle 
+                cx="32" cy="32" r="28" fill="transparent" stroke="currentColor" strokeWidth="4" 
+                className={overallHealth > 80 ? 'text-blue-500' : overallHealth > 50 ? 'text-yellow-500' : 'text-red-500'}
+                strokeDasharray={`${(overallHealth / 100) * 176} 176`}
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="absolute text-sm font-black text-white">{overallHealth}%</span>
+          </div>
+          <div>
+            <h2 className="text-2xl md:text-3xl font-black tracking-tighter text-white flex items-center gap-2 uppercase italic">
+              Control Maestro
+            </h2>
+            <p className="text-zinc-500 text-[10px] font-bold tracking-[0.2em] uppercase neon-text-blue">Estado de Salud de Infraestructura</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 p-2 bg-zinc-900/50 rounded-2xl border border-zinc-800">
+          <div className="text-right pr-3 border-r border-zinc-800">
+            <span className="block text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Latencia DNS</span>
+            <span className="text-white font-mono text-sm">{globalStats?.googleLatency ? `${globalStats.googleLatency}ms` : '---'}</span>
+          </div>
+          <div className="flex items-center gap-2 px-1">
+            <div className={`w-2 h-2 rounded-full ${globalStats?.googleLatency ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-red-500 animate-pulse'}`} />
+            <span className="text-[10px] text-zinc-400 font-medium">Google DNS</span>
+          </div>
+        </div>
       </header>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card className="bg-[#111] border-[#262626]">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-400">Online</CardTitle>
-            <CheckCircle2 className="w-4 h-4 text-green-500" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+        <Card className="bg-[#111] border-[#262626] border-l-4 border-l-blue-600">
+          <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Router API</CardTitle>
+            <Server className="w-4 h-4 text-blue-500" />
           </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-white">{stats.up}</div>
+          <CardContent className="p-4">
+            <div className="flex items-end gap-2">
+              <span className="text-2xl font-black text-white">{stats.routersUp}</span>
+              <span className="text-xs text-zinc-600 mb-1">/ {stats.routersUp + stats.routersDown}</span>
+            </div>
+            <div className="mt-2 text-[10px] text-green-500 font-bold bg-green-500/5 py-1 rounded inline-block">SISTEMA OK</div>
           </CardContent>
         </Card>
-        <Card className="bg-[#111] border-[#262626]">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-gray-400">Offline</CardTitle>
-            <AlertTriangle className="w-4 h-4 text-red-500" />
+
+        <Card className="bg-[#111] border-[#262626] border-l-4 border-l-purple-600">
+          <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Antenas</CardTitle>
+            <Wifi className="w-4 h-4 text-purple-500" />
           </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-white">{stats.down}</div>
+          <CardContent className="p-4">
+            <div className="flex items-end gap-2">
+              <span className="text-2xl font-black text-white">{stats.antennasUp}</span>
+              <span className="text-xs text-zinc-600 mb-1">/ {stats.antennasUp + stats.antennasDown}</span>
+            </div>
+            {stats.antennasDown > 0 && <span className="text-[10px] text-red-500 font-bold">ALERTA CAÍDA</span>}
           </CardContent>
         </Card>
-        {routerStats.length > 0 && (
-          <>
-            <Card className="bg-[#111] border-[#262626]">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">CPU Global</CardTitle>
-                <Cpu className="w-4 h-4 text-purple-500" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold text-white">{Math.round(routerStats[0].stats?.cpuUsage || 0)}%</div>
-              </CardContent>
-            </Card>
-            <Card className="bg-[#111] border-[#262626]">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">RAM Libre</CardTitle>
-                <Database className="w-4 h-4 text-blue-500" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold text-white">{Math.round(routerStats[0].stats?.ramFree || 0)}MB</div>
-              </CardContent>
-            </Card>
-          </>
-        )}
+
+        <Card className="bg-[#111] border-[#262626] border-l-4 border-l-orange-600">
+          <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Carga CPU</CardTitle>
+            <Cpu className="w-4 h-4 text-orange-500" />
+          </CardHeader>
+          <CardContent className="p-4">
+            <span className="text-2xl font-black text-white">{activeRouter?.stats?.cpuUsage || 0}%</span>
+            <div className="mt-2 w-full h-1 bg-zinc-900 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-orange-600 rounded-full" 
+                style={{ width: `${activeRouter?.stats?.cpuUsage || 0}%` }} 
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#111] border-[#262626] border-l-4 border-l-emerald-600">
+          <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">RAM Libre</CardTitle>
+            <Database className="w-4 h-4 text-emerald-500" />
+          </CardHeader>
+          <CardContent className="p-4">
+            <span className="text-2xl font-black text-white">{Math.round(activeRouter?.stats?.ramFree || 0)}MB</span>
+            <span className="text-[10px] block text-zinc-500 mt-1 uppercase">De {Math.round(activeRouter?.stats?.ramTotal || 0)}MB totales</span>
+          </CardContent>
+        </Card>
       </div>
 
-      {/* Traffic and Resources Graphs */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {routerStats.map(rs => (
-          <Card key={rs.deviceId} className="bg-[#111] border-[#262626] overflow-hidden">
-            <CardHeader>
-              <CardTitle className="text-white text-md flex items-center gap-2">
-                <Activity className="w-4 h-4 text-blue-500" />
-                Tráfico de Interfaces: {rs.name}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[250px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={rs.interfaces}>
-                    <defs>
-                      <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                      </linearGradient>
-                      <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#262626" vertical={false} />
-                    <XAxis dataKey="name" stroke="#525252" fontSize={10} tickLine={false} axisLine={false} />
-                    <YAxis stroke="#525252" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val}M`} />
-                    <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #262626', borderRadius: '8px' }} />
-                    <Area type="monotone" dataKey="trafficIn" name="Download" stroke="#3b82f6" fillOpacity={1} fill="url(#colorIn)" />
-                    <Area type="monotone" dataKey="trafficOut" name="Upload" stroke="#8b5cf6" fillOpacity={1} fill="url(#colorOut)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-4">
-                <div className="p-3 bg-[#1a1a1a] rounded-lg border border-[#262626]">
-                  <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Carga CPU</span>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1.5 bg-zinc-800 rounded-full">
-                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${rs.stats?.cpuUsage || 0}%` }} />
-                    </div>
-                    <span className="text-xs font-bold text-white">{rs.stats?.cpuUsage}%</span>
-                  </div>
-                </div>
-                <div className="p-3 bg-[#1a1a1a] rounded-lg border border-[#262626]">
-                  <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">RAM Libre</span>
-                  <div className="text-sm font-bold text-white">{Math.round(rs.stats?.ramFree || 0)} MB</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Oracle AI Section */}
-      <Card className="bg-[#111] border-[#262626] overflow-hidden relative">
-        <div className="absolute top-0 right-0 p-4">
-          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${oracleLoading ? 'bg-blue-500/20 text-blue-400 animate-pulse' : 'bg-purple-500/20 text-purple-400'}`}>
-            <Brain className="w-3 h-3" />
-            {oracleLoading ? 'Procesando Red...' : 'Oráculo Activo'}
+      {/* Main Traffic Graph with Interface Selector */}
+      <Card className="bg-[#111] border-[#262626] overflow-hidden">
+        <CardHeader className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Activity className="w-4 h-4 text-blue-500" />
+              Monitor de Tráfico Histórico
+            </CardTitle>
+            <CardDescription>Visualización dinámica de datos por interfaz.</CardDescription>
           </div>
-        </div>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-white">
-            <Sparkles className="w-5 h-5 text-purple-500" />
-            Análisis de Inteligencia Neuronal
-          </CardTitle>
-          <CardDescription>Diagnóstico predictivo basado en logs y estado de dispositivos.</CardDescription>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2 p-1 bg-zinc-900 rounded-lg">
+              <button 
+                onClick={() => setSelectedRange('5m')}
+                className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${selectedRange === '5m' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-white'}`}
+              >5M</button>
+              <button 
+                onClick={() => setSelectedRange('8h')}
+                className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${selectedRange === '8h' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-white'}`}
+              >8H</button>
+              <button 
+                onClick={() => setSelectedRange('24h')}
+                className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all ${selectedRange === '24h' ? 'bg-blue-600 text-white' : 'text-zinc-500 hover:text-white'}`}
+              >24H</button>
+            </div>
+            <div className="flex items-center gap-2 p-1 bg-zinc-900 rounded-lg border border-zinc-800">
+              <Label className="text-[10px] text-zinc-500 uppercase font-bold ml-2">Intf:</Label>
+              <select 
+                className="bg-transparent border-none rounded-md px-2 py-1 text-[10px] text-white focus:ring-0"
+                value={selectedInterface}
+                onChange={(e) => setSelectedInterface(e.target.value)}
+              >
+                {activeRouter?.interfaces?.map((iface: any) => (
+                  <option key={iface.id} value={iface.name} className="bg-[#111]">{iface.name}</option>
+                ))}
+                {!activeRouter && <option>No hay Router</option>}
+              </select>
+            </div>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-6">
-          {oracleData ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="space-y-4">
-                <div className="p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
-                  <h4 className="text-xs font-bold text-purple-400 uppercase mb-2">Estado de Salud</h4>
-                  <p className="text-lg font-medium text-white">{oracleData.statusSummary}</p>
-                </div>
-                <div className="p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
-                  <h4 className="text-xs font-bold text-blue-400 uppercase mb-2">Inteligencia de Red</h4>
-                  <p className="text-sm text-gray-300 leading-relaxed">{oracleData.intelligence}</p>
-                </div>
-              </div>
-              <div className="space-y-4">
-                <div className="p-4 bg-blue-600/10 rounded-xl border border-blue-600/20">
-                  <h4 className="text-xs font-bold text-blue-400 uppercase mb-2">Recomendación del Oráculo</h4>
-                  <p className="text-sm text-white italic">"{oracleData.recommendation}"</p>
-                </div>
-                <div className="flex items-center justify-between p-4 bg-[#1a1a1a] rounded-xl border border-[#262626]">
-                  <span className="text-sm text-gray-400">Pulso Vital de la Red</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-32 h-2 bg-zinc-800 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-gradient-to-r from-blue-500 to-purple-500" 
-                        style={{ width: `${oracleData.pulseIntensity * 10}%` }}
-                      />
-                    </div>
-                    <span className="text-sm font-bold text-white">{oracleData.pulseIntensity}/10</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="py-12 text-center">
-              <RefreshCw className="w-8 h-8 text-zinc-700 mx-auto mb-4 animate-spin" />
-              <p className="text-gray-500">El Oráculo está recolectando datos de tu red...</p>
-            </div>
-          )}
+        <CardContent>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={historyData?.traffic || []}>
+                <defs>
+                  <linearGradient id="colorIn" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorOut" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#262626" vertical={false} />
+                <XAxis 
+                  dataKey="timestamp" 
+                  stroke="#525252" 
+                  fontSize={8} 
+                  tickLine={false} 
+                  axisLine={false} 
+                  tickFormatter={(val) => new Date(val).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                />
+                <YAxis stroke="#525252" fontSize={10} tickLine={false} axisLine={false} unit="M" />
+                <Tooltip 
+                  labelFormatter={(val) => new Date(val).toLocaleString()}
+                  contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '12px' }}
+                  itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                />
+                <Area type="monotone" dataKey="trafficIn" name="Bajo (RX)" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorIn)" />
+                <Area type="monotone" dataKey="trafficOut" name="Sube (TX)" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#colorOut)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </CardContent>
       </Card>
+
+      {/* Resource History Graph */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card className="bg-[#111] border-[#262626]">
+          <CardHeader>
+            <CardTitle className="text-white text-sm flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-orange-500" /> Historial CPU
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[150px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={historyData?.resources || []}>
+                  <defs>
+                    <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f97316" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis hide domain={[0, 100]} />
+                  <Tooltip 
+                    labelFormatter={(val) => new Date(val).toLocaleString()}
+                    contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '8px' }} 
+                  />
+                  <Area type="monotone" dataKey="cpuUsage" name="CPU %" stroke="#f97316" fillOpacity={1} fill="url(#colorCpu)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#111] border-[#262626]">
+          <CardHeader>
+            <CardTitle className="text-white text-sm flex items-center gap-2">
+              <Database className="w-4 h-4 text-emerald-500" /> Historial RAM Libre
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[150px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={historyData?.resources || []}>
+                  <defs>
+                    <linearGradient id="colorRam" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis hide />
+                  <Tooltip 
+                    labelFormatter={(val) => new Date(val).toLocaleString()}
+                    contentStyle={{ backgroundColor: '#111', border: '1px solid #333', borderRadius: '8px' }} 
+                  />
+                  <Area type="monotone" dataKey="ramFree" name="RAM Libre (MB)" stroke="#10b981" fillOpacity={1} fill="url(#colorRam)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* AI Ticker Strip */}
+      {oracleData && (
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-blue-600/5 border border-blue-500/20 p-2 px-4 rounded-xl flex items-center justify-between group overflow-hidden relative cursor-pointer"
+          onClick={() => (window as any).setActiveTab('oracle')}
+        >
+          <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-500" />
+              <span className="text-[10px] font-black uppercase text-blue-500/50 tracking-[0.2em]">IA Diagnóstico:</span>
+            </div>
+            <p className="text-sm font-bold text-white italic truncate max-w-2xl">{oracleData.statusSummary}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest group-hover:text-blue-500 transition-colors">Ver Detalles Neurales</span>
+            <Brain className="w-4 h-4 text-zinc-700 group-hover:text-blue-500 transition-colors" />
+          </div>
+        </motion.div>
+      )}
     </motion.div>
   );
 }
@@ -497,13 +676,30 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
   const handleAdd = async () => {
     if (!newDevice.name || !newDevice.ip) return toast.error("Nombre e IP son requeridos");
     try {
-      await axios.post('/api/devices', newDevice);
+      if ((newDevice as any).id) {
+        await axios.patch(`/api/devices/${(newDevice as any).id}`, newDevice);
+        toast.success("Dispositivo actualizado");
+      } else {
+        await axios.post('/api/devices', newDevice);
+        toast.success("Dispositivo agregado");
+      }
       setIsAddOpen(false);
+      setNewDevice({
+        name: '',
+        ip: '',
+        type: mode === 'mikrotik' ? 'router' : 'antenna',
+        telegramEnabled: true
+      });
       onRefresh();
-      toast.success("Dispositivo agregado");
     } catch (err) {
       toast.error("Error al guardar");
     }
+  };
+
+  const handleEdit = (device: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setNewDevice(device);
+    setIsAddOpen(true);
   };
 
   const handleDelete = async (id: string) => {
@@ -633,7 +829,10 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
                     <button onClick={() => toggleTelegram(d)}>{d.telegramEnabled ? <Bell className="w-4 h-4 text-blue-500" /> : <BellOff className="w-4 h-4 text-gray-600" />}</button>
                   </TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => handleDelete(d.id)} className="text-gray-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                    <div className="flex justify-end gap-2">
+                      <button onClick={(e) => handleEdit(d, e)} className="text-gray-600 hover:text-blue-500"><Settings2 className="w-4 h-4" /></button>
+                      <button onClick={() => handleDelete(d.id)} className="text-gray-600 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -737,6 +936,19 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
     onRefresh();
   };
 
+  const handleUpdateSpeed = async (id: string, currentSpeed: string) => {
+    const newSpeed = window.prompt("Nueva velocidad (Ej: 20M/20M):", currentSpeed);
+    if (newSpeed && newSpeed !== currentSpeed) {
+      try {
+        await axios.patch(`/api/provisioning/${id}`, { speedLimit: newSpeed });
+        onRefresh();
+        toast.success("Velocidad actualizada en MikroTik");
+      } catch (err) {
+        toast.error("Error al actualizar velocidad");
+      }
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
       <header className="flex justify-between items-center">
@@ -785,8 +997,9 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
             <TableRow className="border-[#262626]">
               <TableHead>Cliente</TableHead>
               <TableHead>IP / MAC</TableHead>
+              <TableHead>Plan</TableHead>
               <TableHead>Estado</TableHead>
-              <TableHead className="text-right">Corte</TableHead>
+              <TableHead className="text-right">Corte / Ajustes</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -794,14 +1007,164 @@ function ProvisioningView({ provisioning, onRefresh }: any) {
               <TableRow key={p.id} className="border-[#262626]">
                 <TableCell className="font-medium text-white">{p.deviceName}</TableCell>
                 <TableCell className="font-mono text-xs">{p.ip}<br/>{p.mac}</TableCell>
+                <TableCell>
+                  <button 
+                    onClick={() => handleUpdateSpeed(p.id, p.speedLimit)}
+                    className="text-xs bg-zinc-900 border border-zinc-800 px-2 py-1 rounded hover:border-blue-500 text-blue-400 font-mono"
+                  >
+                    {p.speedLimit}
+                  </button>
+                </TableCell>
                 <TableCell><Badge className={p.arpEnabled ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>{p.arpEnabled ? 'ACTIVO' : 'CORTADO'}</Badge></TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right space-x-4">
                   <Switch checked={p.arpEnabled} onCheckedChange={() => toggleArp(p)} />
                 </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
+      </Card>
+    </motion.div>
+  );
+}
+
+function OracleView({ devices, logs, onAsk, oracleData, loading }: any) {
+  const [question, setQuestion] = useState("");
+  const [response, setResponse] = useState("");
+  const [asking, setAsking] = useState(false);
+
+  const handleAsk = async () => {
+    if (!question) return;
+    setAsking(true);
+    const res = await onAsk(question, { devices, logs });
+    setResponse(res);
+    setAsking(false);
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 max-w-5xl mx-auto pb-24">
+      <header className="text-center space-y-2">
+        <div className="inline-block p-4 rounded-full bg-blue-500/10 border border-blue-500/20 mb-4 vigilance-pulse relative">
+          <div className="absolute inset-0 bg-blue-500/5 animate-ping rounded-full" />
+          <Brain className="w-16 h-16 text-blue-500 relative z-10" />
+        </div>
+        <h2 className="text-4xl font-black text-white tracking-tighter neon-text-blue">NÚCLEO ORÁCULO AI</h2>
+        <p className="text-zinc-500 uppercase tracking-[0.4em] text-[10px] font-bold">Interfase Neural de Vigilancia Autónoma</p>
+      </header>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2 bg-[#0a0a0a]/80 border-blue-500/20 glass-card">
+          <CardHeader>
+            <CardTitle className="text-blue-400 flex items-center gap-2 text-sm uppercase italic tracking-widest">
+              <Sparkles className="w-4 h-4" /> Diagnóstico Central del Sistema
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-20 gap-4">
+                <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
+                <p className="text-zinc-500 uppercase text-[10px] font-bold tracking-widest animate-pulse">Sincronizando con redes neuronales MikroTik...</p>
+              </div>
+            ) : (
+              <div className="space-y-8">
+                <div className="p-6 bg-blue-500/5 rounded-2xl border border-blue-500/10 relative overflow-hidden group">
+                  <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
+                  <h4 className="text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Resumen de Estado Vital</h4>
+                  <p className="text-white text-xl font-black italic group-hover:neon-text-blue transition-all">"{oracleData?.statusSummary || 'Buscando anomalías...'}"</p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h4 className="text-[10px] uppercase font-black text-zinc-500 mb-4 tracking-widest flex items-center gap-2">
+                      <Terminal className="w-3 h-3" /> Inteligencia Predictiva
+                    </h4>
+                    <p className="text-zinc-400 leading-relaxed text-sm font-light italic border-l-2 border-zinc-800 pl-4">{oracleData?.intelligence || 'El sistema está en fase de aprendizaje de patrones.'}</p>
+                  </div>
+                  <div>
+                    <h4 className="text-[10px] uppercase font-black text-blue-500 mb-4 tracking-widest flex items-center gap-2">
+                      <Zap className="w-3 h-3" /> Acción Proactiva
+                    </h4>
+                    <div className="p-4 bg-zinc-900/50 rounded-xl border border-zinc-800 border-dashed">
+                      <p className="text-white text-sm font-medium">{oracleData?.recommendation || 'No se requiere intervención manual.'}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#0a0a0a]/80 border-blue-500/20 glass-card flex flex-col items-center justify-center p-8 relative overflow-hidden">
+           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-30" />
+           <div className="relative w-40 h-40 mb-6">
+              <svg className="absolute inset-0 w-full h-full transform -rotate-90">
+                <circle cx="80" cy="80" r="70" fill="transparent" stroke="#111" strokeWidth="1" />
+                <circle 
+                  cx="80" cy="80" r="70" fill="transparent" stroke="currentColor" strokeWidth="2" 
+                  className="text-blue-500/20"
+                  strokeDasharray="10 10"
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest">ESTRÉS DE RED</span>
+                <div className="text-3xl font-black text-white mt-1 tabular-nums">{(oracleData?.pulseIntensity || 0) * 10}%</div>
+                <div 
+                  className="w-3 h-3 rounded-full mt-2 vigilance-pulse" 
+                  style={{ backgroundColor: oracleData?.pulseColor || '#3b82f6', boxShadow: `0 0 15px ${oracleData?.pulseColor || '#3b82f6'}` }} 
+                />
+              </div>
+           </div>
+           <p className="text-[9px] text-zinc-500 uppercase tracking-widest text-center mt-4 border-t border-zinc-900 pt-4 w-full">Calibración en curso</p>
+        </Card>
+      </div>
+
+      <Card className="bg-[#0a0a0a] border-zinc-800 hardware-grid relative overflow-hidden">
+        <div className="absolute inset-0 bg-blue-500/5 pointer-events-none" />
+        <CardContent className="pt-8 relative z-10">
+          <div className="flex gap-4">
+            <div className="flex-1 relative">
+              <Input 
+                value={question} 
+                onChange={e => setQuestion(e.target.value)}
+                placeholder="Ingresa consulta técnica al cerebro central..." 
+                className="bg-[#080808] border-zinc-800 text-white font-mono text-xs h-14 pl-12 focus:border-blue-500/50"
+                onKeyDown={e => e.key === 'Enter' && handleAsk()}
+              />
+              <Terminal className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-600" />
+            </div>
+            <Button 
+              onClick={handleAsk}
+              disabled={asking}
+              className="h-14 bg-blue-600 hover:bg-blue-700 px-10 font-black uppercase tracking-widest text-xs"
+            >
+              {asking ? <RefreshCw className="animate-spin w-5 h-5" /> : 'SINC. NEURAL'}
+            </Button>
+          </div>
+          {response && (
+            <motion.div 
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-8 p-8 bg-zinc-950 rounded-3xl border border-zinc-800 shadow-2xl relative"
+            >
+              <div className="absolute top-4 right-6 flex items-center gap-1">
+                <div className="w-1 h-1 rounded-full bg-blue-500" />
+                <div className="w-1 h-1 rounded-full bg-blue-500/50" />
+                <div className="w-1 h-1 rounded-full bg-blue-500/20" />
+              </div>
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
+                  <Activity className="w-4 h-4 text-blue-500 vigilance-pulse" />
+                </div>
+                <span className="text-[10px] font-black uppercase text-zinc-500 tracking-widest italic">Análisis Finalizado:</span>
+              </div>
+              <p className="text-zinc-100 font-mono text-sm leading-relaxed whitespace-pre-wrap">{response}</p>
+              <div className="mt-8 pt-6 border-t border-zinc-900 flex justify-between items-center text-[9px] text-zinc-600 font-bold uppercase tracking-widest">
+                <span>Ref: AI-ORACLE-V2.5</span>
+                <span>TS: {new Date().toLocaleTimeString()}</span>
+              </div>
+            </motion.div>
+          )}
+        </CardContent>
       </Card>
     </motion.div>
   );
@@ -849,8 +1212,9 @@ function SettingsView({ settings, onRefresh }: any) {
             <Input className="bg-[#1a1a1a] border-[#262626]" value={localSettings.telegramBotToken} onChange={e => setLocalSettings({...localSettings, telegramBotToken: e.target.value})} />
           </div>
           <div className="space-y-2">
-            <Label>Telegram Chat ID</Label>
-            <Input className="bg-[#1a1a1a] border-[#262626]" value={localSettings.telegramChatId} onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} />
+            <Label>Telegram Chat ID (Varios usuarios, separar por coma)</Label>
+            <Input className="bg-[#1a1a1a] border-[#262626]" placeholder="ID1, ID2, ID3" value={localSettings.telegramChatId} onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} />
+            <p className="text-[10px] text-zinc-500">Ejemplo: 12345678, 87654321</p>
           </div>
           <Button onClick={handleSave} className="w-full bg-blue-600">Guardar Cambios</Button>
         </CardContent>
