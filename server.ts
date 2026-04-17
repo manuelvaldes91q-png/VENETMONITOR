@@ -333,6 +333,8 @@ async function startServer() {
     const device = db.prepare("SELECT * FROM devices WHERE id = ?").get(req.params.deviceId) as any;
     if (!device || device.type !== 'router') return res.status(404).json({ error: "Router not found" });
 
+    console.log(`[Manual Sync] Starting sync for device: ${device.name} (${device.ip})`);
+
     try {
       const api = new RouterOSAPI({
         host: device.ip,
@@ -348,42 +350,64 @@ async function startServer() {
       const arps = await api.write('/ip/arp/print');
       api.close();
 
+      console.log(`[Manual Sync] Received ${leases.length} leases, ${queues.length} queues, ${arps.length} arps`);
+
       // Enriched data for the UI and DB Update
       const enrichedLeases = leases.map(lease => {
         const ip = lease.address;
-        const mac = lease['mac-address'];
+        const mac = lease['mac-address'] || lease.mac_address;
         
-        // Enhance queue matching
-        const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`)));
-        const speedLimit = matchingQueue ? matchingQueue['max-limit'] : '10M/10M';
+        if (!mac || mac === '00:00:00:00:00:00') {
+          return null;
+        }
+
+        const matchingQueue = queues.find(q => {
+          const target = q.target || '';
+          return target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+        });
         
+        const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '10M/10M';
         const matchingArp = arps.find(a => a.address === ip);
         const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
 
-        // Sync to DB logic with name protection
-        const existing = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(mac) as any;
-        const routerName = lease.comment || lease['host-name'];
-        const finalName = routerName || (existing ? existing.deviceName : `Client ${ip}`);
+        const routerName = lease.comment || lease['host-name'] || lease.host_name;
+        
+        try {
+          // Use INSERT OR REPLACE/IGNORE patterns for robustness
+          const existing = db.prepare("SELECT id, deviceName FROM provisioning WHERE mac = ?").get(mac) as any;
+          const finalName = routerName || (existing ? existing.deviceName : `Client ${ip}`);
 
-        if (!existing) {
-          const id = Math.random().toString(36).substring(7);
-          db.prepare(`
-            INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
-        } else {
-          db.prepare(`
-            UPDATE provisioning 
-            SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
-            WHERE mac = ?
-          `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
+          if (!existing) {
+            const id = Math.random().toString(36).substring(7);
+            db.prepare(`
+              INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
+          } else {
+            db.prepare(`
+              UPDATE provisioning 
+              SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
+              WHERE mac = ?
+            `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
+          }
+        } catch (dbErr: any) {
+          console.error(`[Manual Sync] DB Error for MAC ${mac}:`, dbErr.message);
         }
 
-        return { ...lease, speedLimit, arpEnabled, comment: finalName };
-      });
+        return { 
+          ...lease, 
+          address: ip, 
+          mac_address: mac, 
+          speedLimit, 
+          arpEnabled, 
+          comment: routerName || `Client ${ip}`,
+          isProvisioned: true 
+        };
+      }).filter(Boolean);
 
       res.json(enrichedLeases);
     } catch (err: any) {
+      console.error(`[Manual Sync] Critical Failure:`, err.message);
       res.status(500).json({ error: err.message });
     }
   });
@@ -740,29 +764,44 @@ async function startServer() {
               
               const leaseData = leases.map(lease => {
                 const ip = lease.address;
-                const mac = lease['mac-address'];
+                const mac = lease['mac-address'] || lease.mac_address;
+                if (!mac || mac === '00:00:00:00:00:00') return null;
+
                 const routerComment = lease.comment;
-                const routerHost = lease['host-name'];
-                const matchingQueue = queues.find(q => q.target && (q.target === ip || q.target === `${ip}/32` || q.target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`)));
-                const speedLimit = matchingQueue ? matchingQueue['max-limit'] : '10M/10M';
+                const routerHost = lease['host-name'] || lease.host_name;
+                const matchingQueue = queues.find(q => {
+                  const target = q.target || '';
+                  return target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+                });
+                const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '10M/10M';
                 const matchingArp = arps.find(a => a.address === ip);
                 const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
                 return { mac, ip, routerComment, routerHost, speedLimit, arpEnabled };
-              });
+              }).filter(Boolean);
 
-              // Batch DB sync
-              db.transaction((items) => {
-                for (const item of items) {
+              // Process each lease sync individually for robustness
+              for (const item of leaseData) {
+                try {
                   const existing = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(item.mac) as any;
-                  const finalName = item.routerComment || (existing ? existing.deviceName : item.routerHost) || `Client ${item.ip}`;
+                  const finalName = item.routerComment || item.routerHost || (existing ? existing.deviceName : `Client ${item.ip}`);
+                  
                   if (!existing) {
                     const id = Math.random().toString(36).substring(7);
-                    db.prepare(`INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).run(id, item.ip, item.mac, finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
+                    db.prepare(`
+                      INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    `).run(id, item.ip, item.mac, finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
                   } else {
-                    db.prepare(`UPDATE provisioning SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP WHERE mac = ?`).run(item.ip, finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+                    db.prepare(`
+                      UPDATE provisioning 
+                      SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
+                      WHERE mac = ?
+                    `).run(item.ip, finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
                   }
+                } catch (dbErr) {
+                  // Skip individual record failures
                 }
-              })(leaseData);
+              }
 
               // Router Stats
               if (resources.length > 0) {

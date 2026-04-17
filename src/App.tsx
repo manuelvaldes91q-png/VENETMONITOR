@@ -1019,8 +1019,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
       const res = await axios.get(`/api/router-tools/dhcp-leases/${routerId}`);
       setLeases(res.data);
       toast.success("Leases sincronizados desde MikroTik");
-    } catch (e) {
-      toast.error("Error al sincronizar leases");
+    } catch (e: any) {
+      const msg = e.response?.data?.error || "Error al sincronizar leases";
+      toast.error(msg);
     }
     setSyncing(false);
   };
