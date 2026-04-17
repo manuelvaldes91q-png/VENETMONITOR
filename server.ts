@@ -369,49 +369,55 @@ async function startServer() {
         user: device.username,
         password: device.password,
         port: device.apiPort || 8728,
-        timeout: 20
+        timeout: 30 // Increased timeout
       });
       await api.connect();
       
-      const leases = await api.write('/ip/dhcp-server/lease/print');
-      const queues = await api.write('/queue/simple/print');
-      const arps = await api.write('/ip/arp/print');
+      const rawLeases = await api.write('/ip/dhcp-server/lease/print');
+      const rawQueues = await api.write('/queue/simple/print');
+      const rawArps = await api.write('/ip/arp/print');
       api.close();
 
-      console.log(`[Manual Sync] Received ${leases.length} leases, ${queues.length} queues, ${arps.length} arps`);
+      const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
+      const queues = Array.isArray(rawQueues) ? rawQueues : (rawQueues ? [rawQueues] : []);
+      const arps = Array.isArray(rawArps) ? rawArps : (rawArps ? [rawArps] : []);
+
+      console.log(`[Manual Sync] Device: ${device.name} -> Leases: ${leases.length}, Queues: ${queues.length}, Arps: ${arps.length}`);
 
       // Enriched data for the UI and DB Update
       const enrichedLeases = leases.map(lease => {
         try {
           const ip = lease.address;
-          const mac = lease['mac-address'] || lease.mac_address;
+          // Handle various possible key names for MAC address
+          const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac;
+          
           if (!mac || mac === '00:00:00:00:00:00') return null;
 
-          const routerComment = lease.comment;
-          const routerHost = lease['host-name'] || lease.host_name;
+          const routerComment = lease.comment || '';
+          const routerHost = lease['host-name'] || lease.host_name || '';
           
           // Primary name is DHCP Comment
           const finalName = routerComment || routerHost || `Client ${ip}`;
 
           // Match Queue: By Target IP OR by Name (if it matches the DHCP comment)
           const matchingQueue = queues.find(q => {
-            const target = q.target || '';
-            const qName = q.name || '';
-            const qComment = q.comment || '';
+            const target = String(q.target || '');
+            const qName = String(q.name || '');
+            const qComment = String(q.comment || '');
             
-            const matchesIp = target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+            const matchesIp = target.includes(ip);
             const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
             
             return matchesIp || matchesName;
           });
           
-          const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '1M/1M';
+          const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit || '1M/1M') : '1M/1M';
           
           // Match ARP
-          const matchingArp = arps.find(a => a.address === ip && (a['mac-address'] === mac || a.mac_address === mac || !a['mac-address']));
-          const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+          const matchingArp = arps.find(a => a.address === ip);
+          const arpEnabled = (matchingArp && String(matchingArp.disabled) === 'false') ? 1 : 0;
 
-          // Sync to DB logic
+          // Sync to DB logic inside the enrichment (Atomic update/insert)
           const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ?").get(mac) as any;
 
           if (!existing) {
@@ -438,6 +444,7 @@ async function startServer() {
             isProvisioned: true 
           };
         } catch (itemErr: any) {
+          console.error(`[Manual Sync] Error processing lease:`, itemErr.message);
           return null;
         }
       }).filter(Boolean);
@@ -789,43 +796,47 @@ async function startServer() {
                 user: device.username,
                 password: device.password,
                 port: device.apiPort || 8728,
-                timeout: 10
+                timeout: 30 // Increased timeout
               });
               await api.connect();
               
-              const leases = await api.write('/ip/dhcp-server/lease/print');
-              const queues = await api.write('/queue/simple/print');
-              const arps = await api.write('/ip/arp/print');
-              const resources = await api.write('/system/resource/print');
-              const interfacesList = await api.write('/interface/print');
+              const rawLeases = await api.write('/ip/dhcp-server/lease/print');
+              const rawQueues = await api.write('/queue/simple/print');
+              const rawArps = await api.write('/ip/arp/print');
+              const rawResources = await api.write('/system/resource/print');
+              api.close();
+
+              const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
+              const queues = Array.isArray(rawQueues) ? rawQueues : (rawQueues ? [rawQueues] : []);
+              const arps = Array.isArray(rawArps) ? rawArps : (rawArps ? [rawArps] : []);
+              const resources = Array.isArray(rawResources) ? rawResources : (rawResources ? [rawResources] : []);
               
               const leaseData = leases.map(lease => {
                 try {
                   const ip = lease.address;
-                  const mac = lease['mac-address'] || lease.mac_address;
+                  const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac;
+                  
                   if (!mac || mac === '00:00:00:00:00:00') return null;
 
-                  const routerComment = lease.comment;
-                  const routerHost = lease['host-name'] || lease.host_name;
-                  
-                  // Primary name is DHCP Comment
+                  const routerComment = lease.comment || '';
+                  const routerHost = lease['host-name'] || lease.host_name || '';
                   const finalName = routerComment || routerHost || `Client ${ip}`;
 
                   // Match Queue
                   const matchingQueue = queues.find(q => {
-                    const target = q.target || '';
-                    const qName = q.name || '';
-                    const qComment = q.comment || '';
-                    const matchesIp = target === ip || target === `${ip}/32` || target.split(',').some((t: string) => t.trim() === ip || t.trim() === `${ip}/32`);
+                    const target = String(q.target || '');
+                    const qName = String(q.name || '');
+                    const qComment = String(q.comment || '');
+                    const matchesIp = target.includes(ip);
                     const matchesName = routerComment && (qName === routerComment || qComment === routerComment);
                     return matchesIp || matchesName;
                   });
                   
-                  const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit) : '1M/1M';
+                  const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit || '1M/1M') : '1M/1M';
                   
                   // Match ARP
-                  const matchingArp = arps.find(a => a.address === ip && (a['mac-address'] === mac || a.mac_address === mac || !a['mac-address']));
-                  const arpEnabled = (matchingArp && matchingArp.disabled === 'false') ? 1 : 0;
+                  const matchingArp = arps.find(a => a.address === ip);
+                  const arpEnabled = (matchingArp && String(matchingArp.disabled) === 'false') ? 1 : 0;
                   
                   return { mac, ip, finalName, speedLimit, arpEnabled };
                 } catch (e) {
