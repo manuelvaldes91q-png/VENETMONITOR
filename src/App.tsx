@@ -89,6 +89,7 @@ interface Provisioning {
   arpEnabled: boolean;
   speedLimit: string;
   interfaceName: string;
+  lastSeen?: string;
   createdAt: string;
 }
 
@@ -393,6 +394,19 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
     return Math.round((upFactor * 0.7) + (latencyFactor * 0.3));
   }, [devices, globalStats]);
 
+  const totalTraffic = useMemo(() => {
+    let tx = 0, rx = 0;
+    devices.forEach(d => {
+      if (d.interfaces) {
+        d.interfaces.forEach((iface: any) => {
+          tx += iface.trafficOut || 0;
+          rx += iface.trafficIn || 0;
+        });
+      }
+    });
+    return { tx, rx };
+  }, [devices]);
+
   return (
     <motion.div 
       initial={{ opacity: 0, scale: 0.98 }}
@@ -445,6 +459,29 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
               <span className="text-xs text-zinc-600 mb-1">/ {stats.routersUp + stats.routersDown}</span>
             </div>
             <div className="mt-2 text-[10px] text-green-500 font-bold bg-green-500/5 py-1 rounded inline-block">SISTEMA OK</div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#111] border-[#262626] border-l-4 border-l-blue-400">
+          <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
+            <CardTitle className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Trafico Red</CardTitle>
+            <Activity className="w-4 h-4 text-blue-400" />
+          </CardHeader>
+          <CardContent className="p-4">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-blue-400 font-bold">RX:</span>
+                <span className="text-sm font-black text-white">
+                  {totalTraffic.rx > 0.01 ? (totalTraffic.rx < 1 ? `${(totalTraffic.rx * 1024).toFixed(1)} kbps` : `${totalTraffic.rx.toFixed(2)} Mbps`) : '0.0 kbps'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-purple-400 font-bold">TX:</span>
+                <span className="text-sm font-black text-white">
+                  {totalTraffic.tx > 0.01 ? (totalTraffic.tx < 1 ? `${(totalTraffic.tx * 1024).toFixed(1)} kbps` : `${totalTraffic.tx.toFixed(2)} Mbps`) : '0.0 kbps'}
+                </span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -892,21 +929,30 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
                   <TableRow className="border-[#262626]">
                     <TableHead>Interfaz</TableHead>
                     <TableHead>Estado</TableHead>
-                    <TableHead>TX (Out)</TableHead>
-                    <TableHead>RX (In)</TableHead>
+                    <TableHead className="text-right">TX Rate (Out)</TableHead>
+                    <TableHead className="text-right">RX Rate (In)</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {deviceDetails?.interfaces?.map((iface: any) => (
-                    <TableRow key={iface.id} className="border-[#262626]">
-                      <TableCell className="font-bold text-gray-200">{iface.name}</TableCell>
+                    <TableRow key={iface.id} className="border-[#262626] hover:bg-zinc-900/50">
+                      <TableCell className="font-bold text-gray-200">
+                        <div className="flex items-center gap-2">
+                          <Network className={`w-3 h-3 ${iface.status === 'up' ? 'text-blue-500' : 'text-gray-600'}`} />
+                          {iface.name}
+                        </div>
+                      </TableCell>
                       <TableCell>
-                        <Badge className={iface.status === 'up' ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}>
+                        <Badge className={`text-[9px] font-black ${iface.status === 'up' ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-800 text-zinc-500'}`}>
                           {iface.status === 'up' ? 'ONLINE' : 'DOWN'}
                         </Badge>
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-purple-400">{iface.trafficOut.toFixed(2)} Mbps</TableCell>
-                      <TableCell className="font-mono text-xs text-blue-400">{iface.trafficIn.toFixed(2)} Mbps</TableCell>
+                      <TableCell className="text-right font-mono text-xs tabular-nums text-purple-400">
+                        {iface.trafficOut > 0.01 ? (iface.trafficOut < 1 ? `${(iface.trafficOut * 1024).toFixed(1)} kbps` : `${iface.trafficOut.toFixed(2)} Mbps`) : '0.0 kbps'}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs tabular-nums text-blue-400">
+                        {iface.trafficIn > 0.01 ? (iface.trafficIn < 1 ? `${(iface.trafficIn * 1024).toFixed(1)} kbps` : `${iface.trafficIn.toFixed(2)} Mbps`) : '0.0 kbps'}
+                      </TableCell>
                     </TableRow>
                   ))}
                   {!deviceDetails?.interfaces?.length && (
@@ -934,6 +980,28 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   const [selectedRouterId, setSelectedRouterId] = useState("");
 
   const routers = devices.filter((d: any) => d.type === 'router' && d.status === 'up');
+
+  // Deduplicate by MAC for UI cleanliness
+  const uniqueProvisioning = useMemo(() => {
+    const seen = new Set();
+    return provisioning.filter((p: Provisioning) => {
+      if (seen.has(p.mac)) return false;
+      seen.add(p.mac);
+      return true;
+    });
+  }, [provisioning]);
+
+  const handleCleanup = async () => {
+    if (window.confirm("¿Limpiar clientes no vistos en 48h del panel central? (No afecta MikroTik)")) {
+      try {
+        await axios.post('/api/provisioning/cleanup');
+        onRefresh();
+        toast.success("Limpieza de base de datos completada.");
+      } catch (e) {
+        toast.error("Error al ejecutar limpieza.");
+      }
+    }
+  };
 
   // Trigger auto-refresh for leases if a router is selected
   useEffect(() => {
@@ -1004,42 +1072,47 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
       <header className="flex justify-between items-center">
         <div>
-          <h2 className="text-3xl font-bold text-white">Aprovisionamiento</h2>
-          <p className="text-zinc-400">Gestión de clientes y sincronización automática (DHCP/ARP).</p>
+          <h2 className="text-3xl font-bold text-white uppercase italic tracking-tighter">Aprovisionamiento</h2>
+          <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-widest mt-1">Sincronización Inteligente DHCP / ARP / Queues</p>
         </div>
-        <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-          <DialogTrigger asChild><Button className="bg-blue-600"><Plus className="w-4 h-4 mr-2" /> Nuevo Cliente</Button></DialogTrigger>
-          <DialogContent className="bg-[#111] border-[#262626] text-white">
-            <DialogHeader><DialogTitle>Aprovisionar Cliente</DialogTitle></DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>Nombre del Cliente (DHCP/ARP/Queue)</Label>
-                <Input placeholder="Ej: Juan Perez" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, deviceName: e.target.value})} />
+        <div className="flex gap-3">
+          <Button variant="outline" onClick={handleCleanup} className="border-zinc-800 text-zinc-500 hover:text-white hover:border-red-500/50">
+            <Trash2 className="w-4 h-4 mr-2" /> Limpiar Obsoletos
+          </Button>
+          <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+            <DialogTrigger asChild><Button className="bg-blue-600"><Plus className="w-4 h-4 mr-2" /> Nuevo Cliente</Button></DialogTrigger>
+            <DialogContent className="bg-[#111] border-[#262626] text-white">
+              <DialogHeader><DialogTitle>Aprovisionar Cliente</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label>Nombre del Cliente (DHCP/ARP/Queue)</Label>
+                  <Input placeholder="Ej: Juan Perez" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, deviceName: e.target.value})} />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>IP Address</Label>
+                    <Input placeholder="192.168.88.50" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, ip: e.target.value})} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>MAC Address</Label>
+                    <Input placeholder="AA:BB:CC..." className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, mac: e.target.value})} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Límite Velocidad (Queues)</Label>
+                    <Input placeholder="5M/5M" className="bg-[#1a1a1a] border-[#262626]" defaultValue="10M/10M" onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Interfaz MikroTik</Label>
+                    <Input placeholder="bridge-local" className="bg-[#1a1a1a] border-[#262626]" defaultValue="SALIDA" onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} />
+                  </div>
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>IP Address</Label>
-                  <Input placeholder="192.168.88.50" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, ip: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                  <Label>MAC Address</Label>
-                  <Input placeholder="AA:BB:CC..." className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, mac: e.target.value})} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Límite Velocidad (Queues)</Label>
-                  <Input placeholder="5M/5M" className="bg-[#1a1a1a] border-[#262626]" defaultValue="10M/10M" onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Interfaz MikroTik</Label>
-                  <Input placeholder="bridge-local" className="bg-[#1a1a1a] border-[#262626]" defaultValue="SALIDA" onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} />
-                </div>
-              </div>
-            </div>
-            <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Vincular y Activar</Button></DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Vincular y Activar</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </header>
 
       <Card className="bg-[#111] border-[#262626]">
@@ -1127,10 +1200,15 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {provisioning.map((p: Provisioning) => (
-              <TableRow key={p.id} className="border-[#262626]">
-                <TableCell className="font-medium text-white">{p.deviceName}</TableCell>
-                <TableCell className="font-mono text-xs">{p.ip}<br/>{p.mac}</TableCell>
+            {uniqueProvisioning.map((p: Provisioning) => (
+              <TableRow key={p.id} className="border-[#262626] hover:bg-white/5 transition-colors">
+                <TableCell className="font-medium text-white">
+                  <div className="flex flex-col">
+                    <span>{p.deviceName}</span>
+                    <span className="text-[9px] text-zinc-500 uppercase tracking-tighter">Visto: {p.lastSeen ? new Date(p.lastSeen.replace(' ', 'T') + 'Z').toLocaleString() : '---'}</span>
+                  </div>
+                </TableCell>
+                <TableCell className="font-mono text-xs text-zinc-400">{p.ip}<br/><span className="text-zinc-600">{p.mac}</span></TableCell>
                 <TableCell>
                   <button 
                     onClick={() => handleUpdateSpeed(p.id, p.speedLimit)}
@@ -1325,12 +1403,21 @@ function LogsView({ logs, devices }: any) {
 }
 
 function SettingsView({ settings, onRefresh }: any) {
-  const [localSettings, setLocalSettings] = useState(settings);
+  const [localSettings, setLocalSettings] = useState(settings || {});
+
+  // Sync local state when props change
+  useEffect(() => {
+    if (settings) setLocalSettings(settings);
+  }, [settings]);
 
   const handleSave = async () => {
-    await axios.post('/api/settings', localSettings);
-    onRefresh();
-    toast.success("Configuración guardada");
+    try {
+      await axios.post('/api/settings', localSettings);
+      onRefresh();
+      toast.success("Configuración guardada en el cerebro central");
+    } catch (e) {
+      toast.error("Error al guardar configuración");
+    }
   };
 
   return (

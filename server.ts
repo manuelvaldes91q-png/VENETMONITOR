@@ -48,16 +48,31 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS provisioning (
     id TEXT PRIMARY KEY,
     ip TEXT,
-    mac TEXT,
+    mac TEXT UNIQUE,
     deviceName TEXT,
     routerId TEXT,
     dhcpLease INTEGER DEFAULT 1,
     arpEnabled INTEGER DEFAULT 1,
     speedLimit TEXT,
     interfaceName TEXT,
+    lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+`);
 
+// Clean up existing duplicates before enforcing unique index if needed (manual fix)
+try {
+  db.exec(`
+    DELETE FROM provisioning 
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid) 
+      FROM provisioning 
+      GROUP BY mac
+    );
+  `);
+} catch (e) {}
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS interfaces (
     id TEXT PRIMARY KEY,
     deviceId TEXT,
@@ -206,6 +221,11 @@ async function startServer() {
     res.json({ id, ...p });
   });
 
+  app.post("/api/provisioning/cleanup", (req, res) => {
+    db.prepare("DELETE FROM provisioning WHERE lastSeen < datetime('now', '-48 hours') OR lastSeen IS NULL").run();
+    res.json({ success: true });
+  });
+
   app.patch("/api/provisioning/:id", async (req, res) => {
     const { arpEnabled, speedLimit } = req.body;
     const client = db.prepare("SELECT * FROM provisioning WHERE id = ?").get(req.params.id) as any;
@@ -348,13 +368,13 @@ async function startServer() {
         if (!existing) {
           const id = Math.random().toString(36).substring(7);
           db.prepare(`
-            INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
           `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
         } else {
           db.prepare(`
             UPDATE provisioning 
-            SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?
+            SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP
             WHERE mac = ?
           `).run(ip, finalName, device.id, speedLimit, arpEnabled, mac);
         }
@@ -736,9 +756,9 @@ async function startServer() {
                   const finalName = item.routerComment || (existing ? existing.deviceName : item.routerHost) || `Client ${item.ip}`;
                   if (!existing) {
                     const id = Math.random().toString(36).substring(7);
-                    db.prepare(`INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, item.ip, item.mac, finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
+                    db.prepare(`INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).run(id, item.ip, item.mac, finalName, device.id, item.speedLimit, 'SALIDA', item.arpEnabled);
                   } else {
-                    db.prepare(`UPDATE provisioning SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ? WHERE mac = ?`).run(item.ip, finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
+                    db.prepare(`UPDATE provisioning SET ip = ?, deviceName = ?, routerId = ?, speedLimit = ?, arpEnabled = ?, lastSeen = CURRENT_TIMESTAMP WHERE mac = ?`).run(item.ip, finalName, device.id, item.speedLimit, item.arpEnabled, item.mac);
                   }
                 }
               })(leaseData);
@@ -786,6 +806,9 @@ async function startServer() {
       // Cleanup & Global Stats
       db.prepare("DELETE FROM traffic_history WHERE timestamp < datetime('now', '-7 days')").run();
       db.prepare("DELETE FROM resource_history WHERE timestamp < datetime('now', '-7 days')").run();
+      
+      // Cleanup stale provisioning entries (not seen in 7 days and NOT manual entries)
+      db.prepare("DELETE FROM provisioning WHERE lastSeen < datetime('now', '-7 days')").run();
       
       const upRouter = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up' LIMIT 1").get() as any;
       if (upRouter) {
