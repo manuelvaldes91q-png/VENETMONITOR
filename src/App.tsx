@@ -1026,6 +1026,8 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
       const res = await axios.get(`/api/router-tools/dhcp-leases/${routerId}`);
       setLeases(res.data);
       toast.success("Leases sincronizados desde MikroTik");
+      // Refresh the main provisioning list to show newly discovered static leases
+      onRefresh();
     } catch (e: any) {
       const msg = e.response?.data?.error || "Error al sincronizar leases";
       toast.error(msg);
@@ -1174,11 +1176,15 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                           {isDynamic ? (
                             <Badge variant="outline" className="text-[8px] border-yellow-500/50 text-yellow-500">DINÁMICA</Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[8px] border-green-500/50 text-green-500">ESTÁTICA</Badge>
+                            <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-400 bg-blue-500/5">ESTÁTICA (AUTO-SYNC)</Badge>
                           )}
-                          {!isProvisioned && <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-500">NO VINCULADO</Badge>}
-                          {l.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO (ARP)</Badge>}
-                          {l.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-green-500/20 text-green-500/70">ACTIVO</Badge>}
+                          {isProvisioned ? (
+                            <Badge variant="outline" className="text-[8px] border-green-500/50 text-green-500 bg-green-500/5">VINCULADO</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[8px] border-zinc-500/50 text-zinc-500">NO VINCULADO</Badge>
+                          )}
+                          {l.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO</Badge>}
+                          {l.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-emerald-500/20 text-emerald-500/70">ACTIVO</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
