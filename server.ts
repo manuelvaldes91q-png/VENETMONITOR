@@ -186,13 +186,28 @@ async function startServer() {
   });
 
   app.post("/api/devices", (req, res) => {
-    const device = req.body;
-    const id = Math.random().toString(36).substring(7);
-    db.prepare(`
-      INSERT INTO devices (id, name, type, ip, apiPort, username, password, mac, telegramEnabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, device.name, device.type, device.ip, device.apiPort, device.username, device.password, device.mac, device.telegramEnabled ? 1 : 0);
-    res.json({ id, ...device });
+    try {
+      const device = req.body;
+      const id = Math.random().toString(36).substring(7);
+      db.prepare(`
+        INSERT INTO devices (id, name, type, ip, apiPort, username, password, mac, telegramEnabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, 
+        device.name, 
+        device.type, 
+        device.ip, 
+        device.apiPort || null, 
+        device.username || null, 
+        device.password || null, 
+        device.mac || null, 
+        device.telegramEnabled ? 1 : 0
+      );
+      res.json({ id, ...device });
+    } catch (err: any) {
+      console.error("Error saving device:", err.message);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.delete("/api/devices/:id", (req, res) => {

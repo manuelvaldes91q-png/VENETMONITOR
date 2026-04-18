@@ -837,8 +837,9 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
         telegramEnabled: true
       });
       onRefresh();
-    } catch (err) {
-      toast.error("Error al guardar");
+    } catch (err: any) {
+      const msg = err.response?.data?.error || "Error al guardar";
+      toast.error(msg);
     }
   };
 
