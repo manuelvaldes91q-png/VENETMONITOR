@@ -85,6 +85,7 @@ interface Provisioning {
   ip: string;
   mac: string;
   deviceName: string;
+  routerId: string;
   dhcpLease: boolean;
   arpEnabled: boolean;
   speedLimit: string;
@@ -96,6 +97,14 @@ interface Provisioning {
 interface AppSettings {
   telegramBotToken: string;
   telegramChatId: string;
+  wanStatus?: {
+    WAN1?: { status: string; name: string; traffic: number };
+    WAN2?: { status: string; name: string; traffic: number };
+    alert?: string;
+    updatedAt: number;
+  };
+  googleLatency?: number;
+  googleLatSource?: string;
 }
 
 // --- Components ---
@@ -399,8 +408,11 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
     devices.forEach(d => {
       if (d.interfaces) {
         d.interfaces.forEach((iface: any) => {
-          tx += iface.trafficOut || 0;
-          rx += iface.trafficIn || 0;
+          const name = iface.name.toUpperCase();
+          if (name.includes("SALIDA") || name === "BRIDGE") {
+            tx += iface.trafficOut || 0;
+            rx += iface.trafficIn || 0;
+          }
         });
       }
     });
@@ -447,6 +459,97 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
       </header>
 
       {/* Stats Grid */}
+      {/* Connectivity Status & WAN Monitoring */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <Card className="bg-[#0a0a0a]/80 border-blue-500/20 glass-card col-span-1 md:col-span-2 overflow-hidden relative">
+          <div className="absolute top-0 left-0 w-1 h-full bg-blue-600 shadow-[0_0_10px_#2563eb]" />
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500 flex items-center gap-2">
+              <Globe className="w-3 h-3 text-blue-500" /> Monitoreo Dual-WAN (Balanceo)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-4">
+            {/* WAN1 - AIRTEK */}
+            <div className={`p-4 rounded-2xl border transition-all duration-500 ${globalStats?.wanStatus?.WAN1?.status === 'up' ? 'bg-zinc-900/40 border-emerald-500/20' : 'bg-red-500/5 border-red-500/30 animate-pulse'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN1: AIRTEK</span>
+                  <span className="text-[8px] text-zinc-600 font-mono italic">({globalStats?.wanStatus?.WAN1?.interface || 'Buscando...'})</span>
+                </div>
+                <Badge className={globalStats?.wanStatus?.WAN1?.status === 'up' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/20 text-red-500'}>
+                  {globalStats?.wanStatus?.WAN1?.status === 'up' ? 'EN LÍNEA' : 'CAÍDA'}
+                </Badge>
+              </div>
+              <div className="flex items-end justify-between">
+                <div className="text-xl font-black text-white tabular-nums">
+                  {globalStats?.wanStatus?.WAN1?.traffic ? `${globalStats.wanStatus.WAN1.traffic.toFixed(1)} Mbps` : '0.0 Mbps'}
+                </div>
+                <Activity className={`w-4 h-4 ${globalStats?.wanStatus?.WAN1?.status === 'up' ? 'text-emerald-500 vigilance-pulse' : 'text-zinc-700'}`} />
+              </div>
+              {globalStats?.wanStatus?.WAN1?.status === 'down' && (
+                <p className="text-[9px] text-red-400 mt-2 font-bold uppercase tracking-tighter">REVISAR CONEXIÓN FÍSICA / PROVEEDOR</p>
+              )}
+            </div>
+
+            {/* WAN2 - INTER */}
+            <div className={`p-4 rounded-2xl border transition-all duration-500 ${globalStats?.wanStatus?.WAN2?.status === 'up' ? 'bg-zinc-900/40 border-blue-500/20' : 'bg-red-500/5 border-red-500/30 animate-pulse'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN2: INTER</span>
+                  <span className="text-[8px] text-zinc-600 font-mono italic">({globalStats?.wanStatus?.WAN2?.interface || 'Buscando...'})</span>
+                </div>
+                <Badge className={globalStats?.wanStatus?.WAN2?.status === 'up' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-red-500/20 text-red-500'}>
+                  {globalStats?.wanStatus?.WAN2?.status === 'up' ? 'EN LÍNEA' : 'CAÍDA'}
+                </Badge>
+              </div>
+              <div className="flex items-end justify-between">
+                <div className="text-xl font-black text-white tabular-nums">
+                  {globalStats?.wanStatus?.WAN2?.traffic ? `${globalStats.wanStatus.WAN2.traffic.toFixed(1)} Mbps` : '0.0 Mbps'}
+                </div>
+                <Activity className={`w-4 h-4 ${globalStats?.wanStatus?.WAN2?.status === 'up' ? 'text-blue-500 vigilance-pulse' : 'text-zinc-700'}`} />
+              </div>
+              {globalStats?.wanStatus?.WAN2?.status === 'down' && (
+                <p className="text-[9px] text-red-400 mt-2 font-bold uppercase tracking-tighter">REVISAR CONEXIÓN FÍSICA / PROVEEDOR</p>
+              )}
+            </div>
+
+            {/* Failover Message */}
+            {globalStats?.wanStatus?.alert && (
+              <div className="col-span-1 sm:col-span-2 bg-orange-500/10 border border-orange-500/30 p-3 rounded-xl flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-orange-600 flex items-center justify-center animate-bounce">
+                  <Zap className="w-4 h-4 text-white" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-[11px] font-black text-orange-400 uppercase tracking-widest">{globalStats.wanStatus.alert}</p>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#0a0a0a]/80 border-purple-500/20 glass-card overflow-hidden">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500 flex items-center gap-2">
+              <Activity className="w-3 h-3 text-purple-500" /> Latencia Global
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col items-center justify-center h-full pb-8">
+            <div className="text-5xl font-black text-white tabular-nums tracking-tighter italic">
+              {globalStats?.googleLatency || 0}<span className="text-sm font-normal not-italic text-zinc-600 ml-1">ms</span>
+            </div>
+            <p className="text-[9px] text-zinc-500 uppercase tracking-widest mt-4">
+              Vía {globalStats?.googleLatSource || '---'}
+            </p>
+            <div className={`mt-4 w-24 h-1 rounded-full overflow-hidden bg-zinc-900`}>
+                <div 
+                  className={`h-full transition-all duration-1000 ${Number(globalStats?.googleLatency) < 60 ? 'bg-emerald-500 shadow-[0_0_10px_#10b981]' : Number(globalStats?.googleLatency) < 150 ? 'bg-orange-500' : 'bg-red-500'}`}
+                  style={{ width: `${Math.min(100, (Number(globalStats?.googleLatency) / 300) * 100)}%` }}
+                />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
         <Card className="bg-[#111] border-[#262626] border-l-4 border-l-blue-600">
           <CardHeader className="p-4 pb-0 flex flex-row items-center justify-between">
@@ -992,6 +1095,16 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
     });
   }, [provisioning]);
 
+  const handleDelete = async (id: string) => {
+    try {
+      await axios.delete(`/api/provisioning/${id}`);
+      onRefresh();
+      toast.success("Cliente eliminado del panel");
+    } catch (e) {
+      toast.error("Error al eliminar");
+    }
+  };
+
   const handleCleanup = async () => {
     if (window.confirm("¿Limpiar clientes no vistos en 48h del panel central? (No afecta MikroTik)")) {
       try {
@@ -1156,7 +1269,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {leases.map((l, idx) => {
+                {leases
+                  .filter(l => l.dynamic === 'true')
+                  .map((l, idx) => {
                   const isDynamic = l.dynamic === 'true';
                   const isProvisioned = provisioning.some((p: any) => 
                     (p.ip === l.address) || 

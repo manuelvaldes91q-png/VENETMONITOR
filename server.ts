@@ -21,10 +21,8 @@ const db = new Database(dbPath);
 // Store for calculating traffic rates (Mbps)
 const lastBytesStore: Map<string, { rx: number; tx: number; time: number }> = new Map();
 
-// Create / Reset Tables (Forced clean start for update)
+// Create Tables
 db.exec(`
-  DROP TABLE IF EXISTS provisioning;
-
   CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -175,8 +173,16 @@ async function startServer() {
 
   // Devices
   app.get("/api/devices", (req, res) => {
-    const rows = db.prepare("SELECT * FROM devices").all();
-    res.json(rows.map((r: any) => ({ ...r, telegramEnabled: !!r.telegramEnabled })));
+    const devices = db.prepare("SELECT * FROM devices").all() as any[];
+    const result = devices.map((d: any) => {
+      const interfaces = db.prepare("SELECT * FROM interfaces WHERE deviceId = ?").all(d.id);
+      return { 
+        ...d, 
+        telegramEnabled: !!d.telegramEnabled,
+        interfaces: interfaces || []
+      };
+    });
+    res.json(result);
   });
 
   app.post("/api/devices", (req, res) => {
@@ -543,9 +549,7 @@ async function startServer() {
 
   app.get("/api/global-stats", async (req, res) => {
     const global = getSetting("global") || {};
-    res.json({
-      googleLatency: global.googleLatency || null
-    });
+    res.json(global);
   });
 
   // Gemini AI Native Routes
@@ -798,12 +802,14 @@ async function startServer() {
               const rawQueues = await api.write('/queue/simple/print');
               const rawArps = await api.write('/ip/arp/print');
               const rawResources = await api.write('/system/resource/print');
+              const rawInterfaces = await api.write('/interface/print');
               api.close();
 
               const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
               const queues = Array.isArray(rawQueues) ? rawQueues : (rawQueues ? [rawQueues] : []);
               const arps = Array.isArray(rawArps) ? rawArps : (rawArps ? [rawArps] : []);
               const resources = Array.isArray(rawResources) ? rawResources : (rawResources ? [rawResources] : []);
+              const interfacesList = Array.isArray(rawInterfaces) ? rawInterfaces : (rawInterfaces ? [rawInterfaces] : []);
               
               const leaseData = leases.map(lease => {
                 try {
@@ -866,9 +872,15 @@ async function startServer() {
                 db.prepare(`INSERT INTO resource_history (deviceId, cpuUsage, ramFree) VALUES (?, ?, ?)`).run(device.id, cpu, ram);
               }
 
-              // Interface Traffic
+              // Interface Traffic & WAN Monitoring
               const now = Date.now();
+              const wanStatus: any = {};
+              
               for (const iface of interfacesList) {
+                const nameUC = iface.name.toUpperCase();
+                const isWan1 = nameUC.includes("WAN1") || nameUC.includes("AIRTEK");
+                const isWan2 = nameUC.includes("WAN2") || nameUC.includes("INTER");
+                
                 const id = `${device.id}_${iface.name}`;
                 const rxBytes = parseFloat(iface['rx-byte'] || '0');
                 const txBytes = parseFloat(iface['tx-byte'] || '0');
@@ -882,8 +894,55 @@ async function startServer() {
                   }
                 }
                 lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
-                db.prepare(`INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).run(id, device.id, iface.name, iface.running === 'true' ? 'up' : 'down', mbpsIn, mbpsOut);
+                const currentStatus = iface.running === 'true' ? 'up' : 'down';
+                
+                // WAN Specific Logic
+                if (isWan1 || isWan2) {
+                  const wanKey = isWan1 ? "WAN1" : "WAN2";
+                  const wanPrettyName = isWan1 ? "AIRTEK" : "INTER";
+                  wanStatus[wanKey] = { status: currentStatus, name: wanPrettyName, interface: iface.name, traffic: mbpsIn + mbpsOut };
+
+                  if (isWan1) console.log(`[WAN Monitor] Identified WAN1 (AIRTEK) on interface: ${iface.name}`);
+                  if (isWan2) console.log(`[WAN Monitor] Identified WAN2 (INTER) on interface: ${iface.name}`);
+
+                  // Detect Change for Telegram
+                  const lastWanStates = getSetting("wan_states") || {};
+                  const lastState = lastWanStates[`${device.id}_${wanKey}`];
+                  
+                  if (lastState && lastState !== currentStatus) {
+                    if (telegramBotToken && telegramChatId) {
+                      const icon = currentStatus === 'up' ? '✅' : '❌';
+                      const message = `<b>${icon} ESTADO WAN: ${wanPrettyName}</b>\nNuevo Estado: ${currentStatus.toUpperCase()}\nRouter: ${device.name}`;
+                      const chatIds = telegramChatId.split(',').map((id: string) => id.trim());
+                      for (const cid of chatIds) {
+                        axios.post(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+                          chat_id: cid,
+                          text: message,
+                          parse_mode: 'HTML'
+                        }).catch(() => {});
+                      }
+                    }
+                  }
+                  lastWanStates[`${device.id}_${wanKey}`] = currentStatus;
+                  setSetting("wan_states", lastWanStates);
+                }
+
+                db.prepare(`INSERT OR REPLACE INTO interfaces (id, deviceId, name, status, trafficIn, trafficOut, lastUpdate) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).run(id, device.id, iface.name, currentStatus, mbpsIn, mbpsOut);
                 db.prepare(`INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut) VALUES (?, ?, ?, ?)`).run(device.id, iface.name, mbpsIn, mbpsOut);
+              }
+
+              // Failover Alert Logic
+              if (wanStatus.WAN1 && wanStatus.WAN2) {
+                const globalState = getSetting("global") || {};
+                const currentWanInfo = { ...wanStatus, updatedAt: now };
+                
+                if (wanStatus.WAN1.status === 'down' && wanStatus.WAN2.status === 'up') {
+                  currentWanInfo.alert = "WAN1 (AIRTEK) CAÍDA - WAN2 (INTER) ASUMIÓ TODA LA RED";
+                } else if (wanStatus.WAN2.status === 'down' && wanStatus.WAN1.status === 'up') {
+                  currentWanInfo.alert = "WAN2 (INTER) CAÍDA - WAN1 (AIRTEK) ASUMIÓ TODA LA RED";
+                }
+                
+                setSetting("global", { ...globalState, wanStatus: currentWanInfo });
               }
 
               api.close();
