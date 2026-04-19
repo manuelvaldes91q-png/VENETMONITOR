@@ -455,7 +455,20 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
         <div className="flex items-center gap-3 p-2 bg-zinc-900/50 rounded-2xl border border-zinc-800">
           <div className="text-right pr-3 border-r border-zinc-800">
             <span className="block text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Latencia DNS</span>
-            <span className="text-white font-mono text-sm">{globalStats?.googleLatency ? `${globalStats.googleLatency}ms` : '---'}</span>
+            <div className="flex flex-col gap-0">
+              <div className="flex items-center justify-end gap-1.5 leading-none">
+                <span className="text-[7px] text-emerald-500 font-bold">W1:</span>
+                <span className="text-white font-mono text-[10px] tabular-nums font-bold">
+                  {globalStats?.wan1Latency ? `${Math.round(globalStats.wan1Latency)}ms` : '---'}
+                </span>
+              </div>
+              <div className="flex items-center justify-end gap-1.5 leading-none">
+                <span className="text-[7px] text-blue-500 font-bold">W2:</span>
+                <span className="text-white font-mono text-[10px] tabular-nums font-bold">
+                  {globalStats?.wan2Latency ? `${Math.round(globalStats.wan2Latency)}ms` : '---'}
+                </span>
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-2 px-1">
             <div className={`w-2 h-2 rounded-full ${globalStats?.googleLatency ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-red-500 animate-pulse'}`} />
@@ -479,7 +492,14 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
             <div className={`p-4 rounded-2xl border transition-all duration-500 ${globalStats?.wanStatus?.WAN1?.status === 'up' ? 'bg-zinc-900/40 border-emerald-500/20' : 'bg-red-500/5 border-red-500/30 animate-pulse'}`}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex flex-col">
-                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN1: AIRTEK</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN1: AIRTEK</span>
+                    {globalStats?.wan1Latency > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 text-[8px] font-bold border border-emerald-500/20">
+                        {Math.round(globalStats.wan1Latency)}ms
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[8px] text-zinc-600 font-mono italic">({globalStats?.wanStatus?.WAN1?.interface || 'Buscando...'})</span>
                 </div>
                 <Badge className={globalStats?.wanStatus?.WAN1?.status === 'up' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/20 text-red-500'}>
@@ -501,7 +521,14 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
             <div className={`p-4 rounded-2xl border transition-all duration-500 ${globalStats?.wanStatus?.WAN2?.status === 'up' ? 'bg-zinc-900/40 border-blue-500/20' : 'bg-red-500/5 border-red-500/30 animate-pulse'}`}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex flex-col">
-                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN2: INTER</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">WAN2: INTER</span>
+                    {globalStats?.wan2Latency > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-500 text-[8px] font-bold border border-blue-500/20">
+                        {Math.round(globalStats.wan2Latency)}ms
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[8px] text-zinc-600 font-mono italic">({globalStats?.wanStatus?.WAN2?.interface || 'Buscando...'})</span>
                 </div>
                 <Badge className={globalStats?.wanStatus?.WAN2?.status === 'up' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-red-500/20 text-red-500'}>
@@ -1163,7 +1190,7 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
         ip: lease.address,
         mac: lease.mac_address,
         routerId: selectedRouterId,
-        speedLimit: lease.speedLimit || '1M/1M',
+        speedLimit: lease.speedLimit || '10M/10M',
         interfaceName: 'SALIDA',
         arpEnabled: 1 // Enable by default on import
       });

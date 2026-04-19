@@ -241,20 +241,121 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // --- CORE PROVISIONING LOGIC (ATOMIC SYNC) ---
+  const syncClientToMikroTik = async (clientId: string) => {
+    const client = db.prepare("SELECT * FROM provisioning WHERE id = ?").get(clientId) as any;
+    if (!client) return { success: false, error: "Client not found in DB" };
+
+    const router = db.prepare("SELECT * FROM devices WHERE id = ?").get(client.routerId) as any;
+    let targetApiRouter = router;
+    
+    // Fallback if no specific router or router is down
+    if (!targetApiRouter || targetApiRouter.status !== 'up') {
+      const activeRouter = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up' LIMIT 1").get() as any;
+      if (!activeRouter) return { success: false, error: "No active router found for sync" };
+      targetApiRouter = activeRouter;
+    }
+
+    let api: any = null;
+    try {
+      api = new RouterOSAPI({
+        host: targetApiRouter.ip,
+        user: targetApiRouter.username,
+        password: targetApiRouter.password,
+        port: targetApiRouter.apiPort || 8728,
+        timeout: 15
+      });
+      await api.connect();
+
+      // 1. DHCP Lease: Make Static + Set Comment
+      const leases = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
+      if (leases.length > 0) {
+        const leaseId = leases[0]['.id'];
+        if (leases[0].dynamic === 'true') {
+          await api.write('/ip/dhcp-server/lease/make-static', [`=.id=${leaseId}`]);
+        }
+        await api.write('/ip/dhcp-server/lease/set', [
+          `=.id=${leaseId}`,
+          `=comment=${client.deviceName}`
+        ]);
+      }
+
+      // 2. ARP: Add/Set with Comment + Fixed Interface "SALIDA"
+      const arpList = await api.write('/ip/arp/print', [`?address=${client.ip}`]);
+      const arpInterface = client.interfaceName || 'SALIDA';
+      if (arpList.length > 0) {
+        await api.write('/ip/arp/set', [
+          `=.id=${arpList[0]['.id']}`,
+          `=disabled=${client.arpEnabled ? 'false' : 'true'}`,
+          `=comment=${client.deviceName}`,
+          `=mac-address=${client.mac}`,
+          `=interface=${arpInterface}`
+        ]);
+      } else {
+        await api.write('/ip/arp/add', [
+          `=address=${client.ip}`,
+          `=mac-address=${client.mac}`,
+          `=interface=${arpInterface}`,
+          `=comment=${client.deviceName}`,
+          `=disabled=${client.arpEnabled ? 'false' : 'true'}`
+        ]);
+      }
+
+      // 3. Simple Queue: Name, Comment, Target & Speed
+      let queueId = null;
+      // Search by exact name
+      const qByName = await api.write('/queue/simple/print', [`?name=${client.deviceName}`]);
+      if (qByName.length > 0) {
+        queueId = qByName[0]['.id'];
+      } else {
+        // Search by target IP
+        const qByIp = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
+        if (qByIp.length > 0) queueId = qByIp[0]['.id'];
+      }
+
+      if (queueId) {
+        await api.write('/queue/simple/set', [
+          `=.id=${queueId}`,
+          `=name=${client.deviceName}`,
+          `=comment=${client.deviceName}`,
+          `=target=${client.ip}/32`,
+          `=max-limit=${client.speedLimit}`
+        ]);
+      } else {
+        await api.write('/queue/simple/add', [
+          `=name=${client.deviceName}`,
+          `=comment=${client.deviceName}`,
+          `=target=${client.ip}/32`,
+          `=max-limit=${client.speedLimit}`
+        ]);
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      console.error(`Provisioning Sync Error:`, err.message);
+      return { success: false, error: err.message };
+    } finally {
+      if (api) { try { api.close(); } catch (e) {} }
+    }
+  };
+
   // Provisioning
   app.get("/api/provisioning", (req, res) => {
     const rows = db.prepare("SELECT * FROM provisioning ORDER BY createdAt DESC").all();
     res.json(rows.map((r: any) => ({ ...r, arpEnabled: !!r.arpEnabled, dhcpLease: !!r.dhcpLease })));
   });
 
-  app.post("/api/provisioning", (req, res) => {
+  app.post("/api/provisioning", async (req, res) => {
     const p = req.body;
     const id = Math.random().toString(36).substring(7);
     db.prepare(`
       INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName, p.arpEnabled ? 1 : 0);
-    res.json({ id, ...p });
+    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName || 'SALIDA', p.arpEnabled ? 1 : 0);
+    
+    // Atomic synchronization
+    const syncRes = await syncClientToMikroTik(id);
+    res.json({ id, ...p, syncError: syncRes.error });
   });
 
   app.post("/api/provisioning/cleanup", (req, res) => {
@@ -263,111 +364,20 @@ async function startServer() {
   });
 
   app.patch("/api/provisioning/:id", async (req, res) => {
-    const { arpEnabled, speedLimit } = req.body;
-    const client = db.prepare("SELECT * FROM provisioning WHERE id = ?").get(req.params.id) as any;
-    if (!client) return res.status(404).json({ error: "Client not found" });
-
-    const router = db.prepare("SELECT * FROM devices WHERE id = ?").get(client.routerId) as any;
+    const { arpEnabled, speedLimit, deviceName } = req.body;
     
-    // Fallback: If no routerId, try to find a router that can reach this IP
-    let activeRouter = router;
-    if (!activeRouter || router.status !== 'up') {
-      const allRouters = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up'").all() as any[];
-      activeRouter = allRouters[0]; // Take the first active one as a desperate fallback if not linked
-    }
-
-    if (activeRouter && activeRouter.status === 'up') {
-      try {
-        const api = new RouterOSAPI({
-          host: activeRouter.ip,
-          user: activeRouter.username,
-          password: activeRouter.password,
-          port: activeRouter.apiPort || 8728,
-          timeout: 10
-        });
-        await api.connect();
-
-        // 1. DHCP Lease Management (Make Static & Set Comment)
-        const leasesList = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
-        if (leasesList.length > 0) {
-          const leaseId = leasesList[0]['.id'];
-          // Make static if needed
-          if (leasesList[0].dynamic === 'true') {
-            await api.write('/ip/dhcp-server/lease/make-static', [`=.id=${leaseId}`]);
-          }
-          // Set Comment
-          await api.write('/ip/dhcp-server/lease/set', [
-            `=.id=${leaseId}`,
-            `=comment=${client.deviceName}`
-          ]);
-        }
-
-        // 2. ARP Management (Internet Access)
-        if (arpEnabled !== undefined) {
-          const arpList = await api.write('/ip/arp/print', [`?address=${client.ip}`]);
-          if (arpList.length > 0) {
-            const entryId = arpList[0]['.id'];
-            await api.write('/ip/arp/set', [
-              `=.id=${entryId}`,
-              `=disabled=${arpEnabled ? 'false' : 'true'}`,
-              `=comment=${client.deviceName}`,
-              `=mac-address=${client.mac}`
-            ]);
-            console.log(`MikroTik: ARP ${arpEnabled ? 'enabled' : 'disabled'} with comment for ${client.ip}`);
-          } else if (arpEnabled) {
-            await api.write('/ip/arp/add', [
-              `=address=${client.ip}`,
-              `=mac-address=${client.mac}`,
-              `=interface=${client.interfaceName || 'bridge-local'}`,
-              `=comment=${client.deviceName}`
-            ]);
-            console.log(`MikroTik: ARP created/enabled for ${client.ip}`);
-          }
-        }
-
-        // 3. Simple Queue Management (Speed Limit)
-        if (speedLimit !== undefined) {
-          // Try finding by name first
-          let queueId = null;
-          const queueByName = await api.write('/queue/simple/print', [`?name=${client.deviceName}`]);
-          if (queueByName.length > 0) {
-            queueId = queueByName[0]['.id'];
-          } else {
-            // Find by IP
-            const queueList = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
-            if (queueList.length > 0) queueId = queueList[0]['.id'];
-          }
-
-          if (queueId) {
-            await api.write('/queue/simple/set', [
-              `=.id=${queueId}`,
-              `=max-limit=${speedLimit}`,
-              `=name=${client.deviceName}`,
-              `=target=${client.ip}/32`
-            ]);
-          } else {
-            await api.write('/queue/simple/add', [
-              `=name=${client.deviceName}`,
-              `=target=${client.ip}/32`,
-              `=max-limit=${speedLimit}`
-            ]);
-          }
-        }
-
-        api.close();
-      } catch (err: any) {
-        console.error("MikroTik Sync Error:", err.message);
-        // We continue to update DB even if ROS fails, but maybe log it?
-      }
-    }
-
     if (arpEnabled !== undefined) {
       db.prepare("UPDATE provisioning SET arpEnabled = ? WHERE id = ?").run(arpEnabled ? 1 : 0, req.params.id);
     }
     if (speedLimit !== undefined) {
       db.prepare("UPDATE provisioning SET speedLimit = ? WHERE id = ?").run(speedLimit, req.params.id);
     }
-    res.json({ success: true });
+    if (deviceName !== undefined) {
+      db.prepare("UPDATE provisioning SET deviceName = ? WHERE id = ?").run(deviceName, req.params.id);
+    }
+
+    const syncRes = await syncClientToMikroTik(req.params.id);
+    res.json({ success: syncRes.success, error: syncRes.error });
   });
 
   // Logs
@@ -942,6 +952,43 @@ async function startServer() {
                 db.prepare(`INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut) VALUES (?, ?, ?, ?)`).run(device.id, iface.name, mbpsIn, mbpsOut);
               }
 
+              // DNS Latency Tests per WAN (8.8.8.8 via WAN1, 9.9.9.9 via WAN2)
+              if (api && Object.keys(wanStatus).length > 0) {
+                try {
+                  const pingResults: any = {};
+                  if (wanStatus.WAN1 && wanStatus.WAN1.status === 'up') {
+                    const ping1 = await api.write('/ping', [`=address=8.8.8.8`, `=count=1`, `=interface=${wanStatus.WAN1.interface}`]);
+                    const time = ping1[0]?.time;
+                    if (time) {
+                      // ROS 6.x sometimes returns "XXms", parseFloat handles it.
+                      // If it's already in ms, we don't multiply by 1000 unless it's in seconds.
+                      // Usually ROS API returns raw seconds or ms string.
+                      const val = parseFloat(time);
+                      pingResults.wan1 = time.includes('ms') ? val : val * 1000;
+                    }
+                  }
+                  if (wanStatus.WAN2 && wanStatus.WAN2.status === 'up') {
+                    const ping2 = await api.write('/ping', [`=address=9.9.9.9`, `=count=1`, `=interface=${wanStatus.WAN2.interface}`]);
+                    const time = ping2[0]?.time;
+                    if (time) {
+                      const val = parseFloat(time);
+                      pingResults.wan2 = time.includes('ms') ? val : val * 1000;
+                    }
+                  }
+                  
+                  const globalState = getSetting("global") || {};
+                  setSetting("global", { 
+                    ...globalState, 
+                    wan1Latency: pingResults.wan1 || 0,
+                    wan2Latency: pingResults.wan2 || 0,
+                    googleLatency: pingResults.wan1 || pingResults.wan2 || 0, // Fallback for overall
+                    googleLatSource: device.name
+                  });
+                } catch (pingErr) {
+                  console.error("DNS Ping Error:", pingErr);
+                }
+              }
+
               // Failover Alert Logic (Update even if only 1 WAN is found)
               if (Object.keys(wanStatus).length > 0) {
                 const globalState = getSetting("global") || {};
@@ -978,23 +1025,11 @@ async function startServer() {
       // Cleanup stale provisioning entries (not seen in 7 days and NOT manual entries)
       db.prepare("DELETE FROM provisioning WHERE lastSeen < datetime('now', '-7 days')").run();
       
-      const upRouter = db.prepare("SELECT * FROM devices WHERE type = 'router' AND status = 'up' LIMIT 1").get() as any;
-      if (upRouter) {
-        try {
-          const api = new RouterOSAPI({ host: upRouter.ip, user: upRouter.username, password: upRouter.password, port: upRouter.apiPort || 8728, timeout: 5 });
-          await api.connect();
-          const googlePing = await api.write('/ping', ['=address=8.8.8.8', '=count=1']);
-          api.close();
-          const latency = googlePing[0]?.time ? parseFloat(googlePing[0].time) * 1000 : 0;
-          if (latency > 0) {
-            const current = getSetting("global") || {};
-            setSetting("global", { ...current, googleLatency: Math.round(latency), googleLatSource: upRouter.name });
-          }
-        } catch (e) {}
-      } else {
+      // Global Stats Fallback (only if no router-based latency was set)
+      const currentStats = getSetting("global") || {};
+      if (!currentStats.googleLatency || currentStats.googleLatency === 0) {
         const res = await pingHost("8.8.8.8");
-        const current = getSetting("global") || {};
-        setSetting("global", { ...current, googleLatency: Math.round(res.time), googleLatSource: "VPS (Fallback)" });
+        setSetting("global", { ...currentStats, googleLatency: Math.round(res.time), googleLatSource: "VPS (Fallback)" });
       }
 
       setSetting("global", { 
