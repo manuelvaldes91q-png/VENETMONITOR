@@ -1198,13 +1198,17 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   };
 
   const handleAdd = async () => {
+    if (!newProv.deviceName || newProv.deviceName.trim() === '') {
+      toast.error("Debes ingresar un nombre para el cliente");
+      return;
+    }
     setSyncing(true);
     try {
       const res = await axios.post('/api/provisioning', newProv);
       if (res.data.syncError) {
         toast.error(`Aprovisionado en DB pero error en MikroTik: ${res.data.syncError}`);
       } else {
-        toast.success("¡CLIENTE ACTIVADO FULL! DHCP/ARP/Queue OK");
+        toast.success(`¡CLIENTE ${newProv.deviceName} ACTIVADO!`);
       }
       setIsAddOpen(false);
       onRefresh();
@@ -1266,26 +1270,51 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
                   <Label>Nombre del Cliente (DHCP/ARP/Queue)</Label>
-                  <Input placeholder="Ej: Juan Perez" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, deviceName: e.target.value})} />
+                  <Input 
+                    placeholder="Ej: Juan Perez" 
+                    className="bg-[#1a1a1a] border-[#262626]" 
+                    value={newProv.deviceName || ''} 
+                    onChange={e => setNewProv({...newProv, deviceName: e.target.value})} 
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>IP Address</Label>
-                    <Input placeholder="192.168.88.50" className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, ip: e.target.value})} />
+                    <Input 
+                      placeholder="192.168.88.50" 
+                      className="bg-[#1a1a1a] border-[#262626]" 
+                      value={newProv.ip || ''} 
+                      onChange={e => setNewProv({...newProv, ip: e.target.value})} 
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>MAC Address</Label>
-                    <Input placeholder="AA:BB:CC..." className="bg-[#1a1a1a] border-[#262626]" onChange={e => setNewProv({...newProv, mac: e.target.value})} />
+                    <Input 
+                      placeholder="AA:BB:CC..." 
+                      className="bg-[#1a1a1a] border-[#262626]" 
+                      value={newProv.mac || ''} 
+                      onChange={e => setNewProv({...newProv, mac: e.target.value})} 
+                    />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Límite Velocidad (Queues)</Label>
-                    <Input placeholder="5M/5M" className="bg-[#1a1a1a] border-[#262626]" defaultValue="10M/10M" onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} />
+                    <Input 
+                      placeholder="5M/5M" 
+                      className="bg-[#1a1a1a] border-[#262626]" 
+                      value={newProv.speedLimit || '10M/10M'} 
+                      onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} 
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Interfaz MikroTik</Label>
-                    <Input placeholder="bridge-local" className="bg-[#1a1a1a] border-[#262626]" defaultValue="SALIDA" onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} />
+                    <Input 
+                      placeholder="bridge-local" 
+                      className="bg-[#1a1a1a] border-[#262626]" 
+                      value={newProv.interfaceName || 'SALIDA'} 
+                      onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} 
+                    />
                   </div>
                 </div>
               </div>
