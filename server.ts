@@ -747,6 +747,9 @@ async function startServer() {
       const settings = getSetting("global") || {};
       const { telegramBotToken, telegramChatId } = settings;
       const devices = db.prepare("SELECT * FROM devices").all() as any[];
+      
+      let totalNetworkRX = 0;
+      let totalNetworkTX = 0;
 
       for (const device of devices) {
         try {
@@ -861,13 +864,16 @@ async function startServer() {
               const wanStatus: any = {};
               
               for (const iface of interfacesList) {
-                const nameUC = iface.name.toUpperCase();
-                const isWan1 = nameUC.includes("WAN1") || nameUC.includes("AIRTEK");
-                const isWan2 = nameUC.includes("WAN2") || nameUC.includes("INTER");
+                const nameUC = (iface.name || '').toUpperCase();
+                const commentUC = (iface.comment || '').toUpperCase();
+
+                const isWan1 = nameUC.includes("WAN1") || nameUC.includes("AIRTEK") || commentUC.includes("WAN1") || commentUC.includes("AIRTEK");
+                const isWan2 = nameUC.includes("WAN2") || nameUC.includes("INTER") || commentUC.includes("WAN2") || commentUC.includes("INTER");
                 
+                // Traffic calculation (handling both singular and plural from different ROS versions)
                 const id = `${device.id}_${iface.name}`;
-                const rxBytes = parseFloat(iface['rx-byte'] || '0');
-                const txBytes = parseFloat(iface['tx-byte'] || '0');
+                const rxBytes = parseFloat(iface['rx-byte'] || iface['rx-bytes'] || iface['rx_byte'] || '0');
+                const txBytes = parseFloat(iface['tx-byte'] || iface['tx-bytes'] || iface['tx_byte'] || '0');
                 let mbpsIn = 0, mbpsOut = 0;
                 const lastData = lastBytesStore.get(id);
                 if (lastData) {
@@ -880,14 +886,33 @@ async function startServer() {
                 lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
                 const currentStatus = iface.running === 'true' ? 'up' : 'down';
                 
-                // Dashboard Traffic Logic (Sum "SALIDA" or "BRIDGE" or "LOCAL")
-                const ifaceTrafficWeight = (nameUC.includes("SALIDA") || nameUC.includes("BRIDGE") || nameUC.includes("LOCAL") || nameUC.includes("LAN")) ? 1 : 0;
+                // Debug log for traffic
+                if (rxBytes > 0 || txBytes > 0) {
+                  console.log(`[Traffic Debug] ${device.name} -> ${iface.name}: RX=${rxBytes}, TX=${txBytes} (Calculated: ${mbpsIn.toFixed(2)} Mbps In, ${mbpsOut.toFixed(2)} Mbps Out)`);
+                }
+                
+                // Dashboard Traffic Logic (Sum "SALIDA", "BRIDGE", "LOCAL", "LAN" or "ETHER" if running)
+                const isLocal = nameUC.includes("SALIDA") || nameUC.includes("BRIDGE") || nameUC.includes("LOCAL") || nameUC.includes("LAN") || 
+                                (nameUC.includes("ETHER") && iface.running === 'true' && !isWan1 && !isWan2);
+                
+                const ifaceTrafficWeight = isLocal ? 1 : 0;
+                if (ifaceTrafficWeight > 0) {
+                  totalNetworkRX += mbpsIn;
+                  totalNetworkTX += mbpsOut;
+                }
                 
                 // WAN Specific Logic
                 if (isWan1 || isWan2) {
                   const wanKey = isWan1 ? "WAN1" : "WAN2";
                   const wanPrettyName = isWan1 ? "AIRTEK" : "INTER";
-                  wanStatus[wanKey] = { status: currentStatus, name: wanPrettyName, interface: iface.name, traffic: mbpsIn + mbpsOut };
+                  const combinedTraffic = mbpsIn + mbpsOut;
+                  wanStatus[wanKey] = { 
+                    status: currentStatus, 
+                    name: wanPrettyName, 
+                    interface: iface.name, 
+                    traffic: combinedTraffic,
+                    trafficStr: combinedTraffic < 1 ? `${(combinedTraffic * 1024).toFixed(1)} kbps` : `${combinedTraffic.toFixed(2)} Mbps`
+                  };
 
                   console.log(`[WAN Monitor] Identified ${wanKey} (${wanPrettyName}) on interface: ${iface.name} [Traffic: ${(mbpsIn + mbpsOut).toFixed(2)} Mbps]`);
 
@@ -917,15 +942,17 @@ async function startServer() {
                 db.prepare(`INSERT INTO traffic_history (deviceId, interfaceName, trafficIn, trafficOut) VALUES (?, ?, ?, ?)`).run(device.id, iface.name, mbpsIn, mbpsOut);
               }
 
-              // Failover Alert Logic
-              if (wanStatus.WAN1 && wanStatus.WAN2) {
+              // Failover Alert Logic (Update even if only 1 WAN is found)
+              if (Object.keys(wanStatus).length > 0) {
                 const globalState = getSetting("global") || {};
                 const currentWanInfo = { ...wanStatus, updatedAt: now };
                 
-                if (wanStatus.WAN1.status === 'down' && wanStatus.WAN2.status === 'up') {
-                  currentWanInfo.alert = "WAN1 (AIRTEK) CAÍDA - WAN2 (INTER) ASUMIÓ TODA LA RED";
-                } else if (wanStatus.WAN2.status === 'down' && wanStatus.WAN1.status === 'up') {
-                  currentWanInfo.alert = "WAN2 (INTER) CAÍDA - WAN1 (AIRTEK) ASUMIÓ TODA LA RED";
+                if (wanStatus.WAN1 && wanStatus.WAN2) {
+                  if (wanStatus.WAN1.status === 'down' && wanStatus.WAN2.status === 'up') {
+                    currentWanInfo.alert = "WAN1 (AIRTEK) CAÍDA - WAN2 (INTER) ASUMIÓ TODA LA RED";
+                  } else if (wanStatus.WAN2.status === 'down' && wanStatus.WAN1.status === 'up') {
+                    currentWanInfo.alert = "WAN2 (INTER) CAÍDA - WAN1 (AIRTEK) ASUMIÓ TODA LA RED";
+                  }
                 }
                 
                 setSetting("global", { ...globalState, wanStatus: currentWanInfo });
@@ -967,7 +994,13 @@ async function startServer() {
         setSetting("global", { ...current, googleLatency: Math.round(res.time), googleLatSource: "VPS (Fallback)" });
       }
 
-      console.log(`[${new Date().toISOString()}] Monitor: Cycle finished`);
+      setSetting("global", { 
+        ...getSetting("global"), 
+        totalTrafficIn: totalNetworkRX, 
+        totalTrafficOut: totalNetworkTX 
+      });
+
+      console.log(`[${new Date().toISOString()}] Monitor: Cycle finished. Total Net: ${totalNetworkRX.toFixed(2)} / ${totalNetworkTX.toFixed(2)} Mbps`);
     } catch (err: any) {
       console.error("Critical Monitor error:", err.message);
     }

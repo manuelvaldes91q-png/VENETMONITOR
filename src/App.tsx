@@ -171,7 +171,7 @@ export default function App() {
   useEffect(() => {
     if (isLoggedIn) {
       fetchData();
-      const interval = setInterval(fetchData, 120000); // Poll every 2 mins to save bandwidth
+      const interval = setInterval(fetchData, 30000); // Poll every 30s for better responsiveness
       return () => clearInterval(interval);
     }
   }, [isLoggedIn]);
@@ -405,6 +405,12 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
 
   const totalTraffic = useMemo(() => {
     let tx = 0, rx = 0;
+    
+    // Prefer Global Backend Aggregate if available
+    if (globalStats?.totalTrafficIn !== undefined) {
+      return { rx: globalStats.totalTrafficIn, tx: globalStats.totalTrafficOut };
+    }
+    
     devices.forEach(d => {
       if (d.interfaces) {
         d.interfaces.forEach((iface: any) => {
@@ -482,7 +488,7 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
               </div>
               <div className="flex items-end justify-between">
                 <div className="text-xl font-black text-white tabular-nums">
-                  {globalStats?.wanStatus?.WAN1?.traffic ? `${globalStats.wanStatus.WAN1.traffic.toFixed(1)} Mbps` : '0.0 Mbps'}
+                  {globalStats?.wanStatus?.WAN1?.trafficStr || '0.0 Mbps'}
                 </div>
                 <Activity className={`w-4 h-4 ${globalStats?.wanStatus?.WAN1?.status === 'up' ? 'text-emerald-500 vigilance-pulse' : 'text-zinc-700'}`} />
               </div>
@@ -504,7 +510,7 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
               </div>
               <div className="flex items-end justify-between">
                 <div className="text-xl font-black text-white tabular-nums">
-                  {globalStats?.wanStatus?.WAN2?.traffic ? `${globalStats.wanStatus.WAN2.traffic.toFixed(1)} Mbps` : '0.0 Mbps'}
+                  {globalStats?.wanStatus?.WAN2?.trafficStr || '0.0 Mbps'}
                 </div>
                 <Activity className={`w-4 h-4 ${globalStats?.wanStatus?.WAN2?.status === 'up' ? 'text-blue-500 vigilance-pulse' : 'text-zinc-700'}`} />
               </div>
@@ -575,13 +581,13 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
               <div className="flex items-center justify-between">
                 <span className="text-[9px] text-blue-400 font-bold">RX:</span>
                 <span className="text-sm font-black text-white">
-                  {totalTraffic.rx > 0.01 ? (totalTraffic.rx < 1 ? `${(totalTraffic.rx * 1024).toFixed(1)} kbps` : `${totalTraffic.rx.toFixed(2)} Mbps`) : '0.0 kbps'}
+                  {totalTraffic.rx > 0.001 ? (totalTraffic.rx < 1 ? `${(totalTraffic.rx * 1024).toFixed(1)} kbps` : `${totalTraffic.rx.toFixed(2)} Mbps`) : '0.0 kbps'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[9px] text-purple-400 font-bold">TX:</span>
                 <span className="text-sm font-black text-white">
-                  {totalTraffic.tx > 0.01 ? (totalTraffic.tx < 1 ? `${(totalTraffic.tx * 1024).toFixed(1)} kbps` : `${totalTraffic.tx.toFixed(2)} Mbps`) : '0.0 kbps'}
+                  {totalTraffic.tx > 0.001 ? (totalTraffic.tx < 1 ? `${(totalTraffic.tx * 1024).toFixed(1)} kbps` : `${totalTraffic.tx.toFixed(2)} Mbps`) : '0.0 kbps'}
                 </span>
               </div>
             </div>
