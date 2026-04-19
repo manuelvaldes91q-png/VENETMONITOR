@@ -789,7 +789,7 @@ async function startServer() {
               const rawQueues = await api.write('/queue/simple/print');
               const rawArps = await api.write('/ip/arp/print');
               const rawResources = await api.write('/system/resource/print');
-              const rawInterfaces = await api.write('/interface/print');
+              const rawInterfaces = await api.write('/interface/print', ['=.proplist=.id,name,comment,rx-byte,tx-byte,running,disabled,type']);
               api.close();
 
               const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
@@ -1022,11 +1022,11 @@ async function startServer() {
     console.log(`🤖 Modo: ${process.env.NODE_ENV === 'production' ? 'PRODUCCIÓN' : 'DESARROLLO'}`);
     
     // Start background tasks AFTER server is listening
-    console.log(`📊 Iniciando monitoreo MikroTik en 5 segundos...`);
+    console.log(`📊 Iniciando monitoreo MikroTik en 2 segundos...`);
     setTimeout(() => {
       monitorDevices();
-      setInterval(monitorDevices, 60000);
-    }, 5000);
+      setInterval(monitorDevices, 30000); // Polling every 30s for more real-time feel
+    }, 2000);
   });
 } catch (fatalErr: any) {
   console.error("❌ ERROR FATAL AL INICIAR SERVIDOR:", fatalErr.message);
