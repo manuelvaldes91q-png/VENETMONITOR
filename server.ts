@@ -74,16 +74,25 @@ try {
 
 // Robust Unique Enforcement: MAC and IP must be unique globally in the provisioning system
 try {
-  // 1. First, delete any pre-existing duplicates to allow index creation
+  // 1. Delete duplicates by IP (keep oldest)
   db.exec(`
     DELETE FROM provisioning 
     WHERE rowid NOT IN (
       SELECT MIN(rowid) 
       FROM provisioning 
-      GROUP BY mac, ip
+      GROUP BY ip
     );
   `);
-  // 2. Create the index
+  // 2. Delete duplicates by MAC (keep oldest)
+  db.exec(`
+    DELETE FROM provisioning 
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid) 
+      FROM provisioning 
+      GROUP BY mac
+    );
+  `);
+  // 3. Create the indices
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_mac ON provisioning(mac)");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_ip ON provisioning(ip)");
   console.log("Migration: Global unique indices for MAC and IP enforced.");
@@ -507,7 +516,33 @@ async function startServer() {
 
   app.post("/api/settings", (req, res) => {
     setSetting("global", req.body);
+    console.log(`[Settings] Global settings updated. Telegram Token: ${req.body.telegramBotToken ? 'Present' : 'Missing'}`);
     res.json({ success: true });
+  });
+
+  app.post("/api/test-telegram", async (req, res) => {
+    const { token, chatId } = req.body;
+    if (!token || !chatId) return res.status(400).json({ error: "Falta Token o Chat ID" });
+
+    try {
+      const message = "<b>✅ PRUEBA DE SISTEMA MIKROTIK</b>\nSi recibes esto, las notificaciones están configuradas correctamente.";
+      const chatIds = chatId.split(',').map((id: string) => id.trim());
+      
+      for (const cid of chatIds) {
+        await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+          chat_id: cid,
+          text: message,
+          parse_mode: 'HTML'
+        });
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[Telegram Test Error]:", err.response?.data || err.message);
+      res.status(500).json({ 
+        error: "Error de Telegram", 
+        details: err.response?.data?.description || err.message 
+      });
+    }
   });
 
   // Oracle

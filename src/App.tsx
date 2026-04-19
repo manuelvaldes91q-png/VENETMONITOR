@@ -24,6 +24,7 @@ import {
   Sparkles,
   Zap,
   MessageSquare,
+  Send,
   Database,
   Download,
   History,
@@ -1308,17 +1309,27 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">IP Asignada (Static)</Label>
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                      IP Asignada (Static) 
+                      {provisioning.find(p => p.ip === newProv.ip && p.id !== newProv.id) && (
+                        <span className="text-red-500 ml-2 animate-pulse">(!) EN USO POR: {provisioning.find(p => p.ip === newProv.ip)?.deviceName}</span>
+                      )}
+                    </Label>
                     <Input 
-                      className="bg-[#141414] border-[#262626] font-mono text-xs opacity-80" 
+                      className={`bg-[#141414] border-[#262626] font-mono text-xs opacity-80 ${provisioning.find(p => p.ip === newProv.ip && p.id !== newProv.id) ? 'border-red-500/50 ring-1 ring-red-500/20' : ''}`} 
                       value={newProv.ip || ''} 
                       onChange={e => setNewProv({...newProv, ip: e.target.value})} 
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">MAC Address</Label>
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                      MAC Address
+                      {provisioning.find(p => p.mac === newProv.mac && p.id !== newProv.id) && (
+                        <span className="text-red-500 ml-2 animate-pulse">(!) EN USO POR: {provisioning.find(p => p.mac === newProv.mac)?.deviceName}</span>
+                      )}
+                    </Label>
                     <Input 
-                      className="bg-[#141414] border-[#262626] font-mono text-xs opacity-80" 
+                      className={`bg-[#141414] border-[#262626] font-mono text-xs opacity-80 ${provisioning.find(p => p.mac === newProv.mac && p.id !== newProv.id) ? 'border-red-500/50 ring-1 ring-red-500/20' : ''}`} 
                       value={newProv.mac || ''} 
                       onChange={e => setNewProv({...newProv, mac: e.target.value})} 
                     />
@@ -1367,8 +1378,12 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
               <DialogFooter className="bg-[#141414] p-4 -mx-6 -mb-6 border-t border-[#222]">
                 <Button 
                   onClick={handleAdd} 
-                  disabled={syncing}
-                  className="bg-blue-600 hover:bg-blue-700 w-full h-11 font-black italic tracking-widest shadow-lg shadow-blue-600/20"
+                  disabled={
+                    syncing || 
+                    !newProv.deviceName || 
+                    !!provisioning.find(p => (p.ip === newProv.ip || p.mac === newProv.mac) && p.id !== newProv.id)
+                  }
+                  className="bg-blue-600 hover:bg-blue-700 w-full h-11 font-black italic tracking-widest shadow-lg shadow-blue-600/20 disabled:opacity-50 disabled:grayscale"
                 >
                   {syncing ? (
                     <div className="flex items-center gap-2">
@@ -1799,6 +1814,28 @@ function SettingsView({ settings, onRefresh }: any) {
     if (settings) setLocalSettings(settings);
   }, [settings]);
 
+  const [testingTelegram, setTestingTelegram] = useState(false);
+
+  const handleTestTelegram = async () => {
+    if (!localSettings.telegramBotToken || !localSettings.telegramChatId) {
+      toast.error("Falta Token o Chat ID para la prueba");
+      return;
+    }
+    setTestingTelegram(true);
+    try {
+      await axios.post('/api/test-telegram', {
+        token: localSettings.telegramBotToken,
+        chatId: localSettings.telegramChatId
+      });
+      toast.success("¡Mensaje de prueba enviado! Revisa tu Telegram.");
+    } catch (e: any) {
+      const detail = e.response?.data?.details || "Revisa tus credenciales";
+      toast.error(`Fallo en Telegram: ${detail}`);
+    } finally {
+      setTestingTelegram(false);
+    }
+  };
+
   const handleSave = async () => {
     try {
       await axios.post('/api/settings', localSettings);
@@ -1815,15 +1852,44 @@ function SettingsView({ settings, onRefresh }: any) {
       <Card className="bg-[#111] border-[#262626] max-w-2xl">
         <CardContent className="pt-6 space-y-6">
           <div className="space-y-2">
-            <Label>Telegram Bot Token</Label>
-            <Input className="bg-[#1a1a1a] border-[#262626]" value={localSettings.telegramBotToken || ""} onChange={e => setLocalSettings({...localSettings, telegramBotToken: e.target.value})} />
+            <Label className="flex items-center gap-2">
+               <Send className="w-3 h-3 text-blue-400" /> Telegram Bot Token
+            </Label>
+            <Input 
+              className="bg-[#1a1a1a] border-[#262626] font-mono text-xs focus:border-blue-500/50" 
+              placeholder="Ej: 123456:ABC-789..."
+              value={localSettings.telegramBotToken || ""} 
+              onChange={e => setLocalSettings({...localSettings, telegramBotToken: e.target.value})} 
+            />
+            <p className="text-[9px] text-zinc-600">Obtenido de @BotFather</p>
           </div>
           <div className="space-y-2">
-            <Label>Telegram Chat ID (Varios usuarios, separar por coma)</Label>
-            <Input className="bg-[#1a1a1a] border-[#262626]" placeholder="ID1, ID2, ID3" value={localSettings.telegramChatId || ""} onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} />
-            <p className="text-[10px] text-zinc-500">Ejemplo: 12345678, 87654321</p>
+            <Label className="flex items-center gap-2">
+               <MessageSquare className="w-3 h-3 text-blue-400" /> Telegram Chat ID
+            </Label>
+            <Input 
+              className="bg-[#1a1a1a] border-[#262626] font-mono text-xs focus:border-blue-500/50" 
+              placeholder="Ej: -10012345678 (Varios usuarios, separar por coma)" 
+              value={localSettings.telegramChatId || ""} 
+              onChange={e => setLocalSettings({...localSettings, telegramChatId: e.target.value})} 
+            />
+            <p className="text-[9px] text-zinc-600">Puedes obtener tu ID con @userinfobot o @myidbot</p>
           </div>
-          <Button onClick={handleSave} className="w-full bg-blue-600">Guardar Cambios</Button>
+          
+          <div className="flex gap-4">
+            <Button 
+              variant="outline" 
+              onClick={handleTestTelegram} 
+              disabled={testingTelegram}
+              className="flex-1 border-[#262626] hover:bg-zinc-800 text-xs font-bold"
+            >
+              {testingTelegram ? <RefreshCw className="animate-spin w-4 h-4 mr-2" /> : <Send className="w-4 h-4 mr-2" />}
+              PRUEBA DE NOTIFICACIÓN
+            </Button>
+            <Button onClick={handleSave} className="flex-1 bg-blue-600 hover:bg-blue-700 font-bold uppercase tracking-widest text-xs">
+              Guardar Cambios
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </motion.div>
