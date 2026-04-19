@@ -395,9 +395,9 @@ async function startServer() {
   // --- Router Tools (Live from MikroTik) ---
   app.get("/api/router-tools/dhcp-leases/:deviceId", async (req, res) => {
     const device = db.prepare("SELECT * FROM devices WHERE id = ?").get(req.params.deviceId) as any;
-    if (!device || device.type !== 'router') return res.status(404).json({ error: "Router not found" });
+    if (!device || device.type !== 'router') return res.status(404).json({ error: "Router no encontrado" });
 
-    console.log(`[Manual Sync] Starting sync for device: ${device.name} (${device.ip})`);
+    console.log(`[Manual Sync] Explorando leases en: ${device.name}`);
 
     try {
       const api = new RouterOSAPI({
@@ -405,81 +405,38 @@ async function startServer() {
         user: device.username,
         password: device.password,
         port: device.apiPort || 8728,
-        timeout: 30 // Increased timeout
+        timeout: 15
       });
       await api.connect();
       
       const rawLeases = await api.write('/ip/dhcp-server/lease/print');
       const rawQueues = await api.write('/queue/simple/print');
-      const rawArps = await api.write('/ip/arp/print');
       api.close();
 
       const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
       const queues = Array.isArray(rawQueues) ? rawQueues : (rawQueues ? [rawQueues] : []);
-      const arps = Array.isArray(rawArps) ? rawArps : (rawArps ? [rawArps] : []);
 
-      console.log(`[Manual Sync] Device: ${device.name} -> Leases: ${leases.length}, Queues: ${queues.length}, Arps: ${arps.length}`);
-
-      // Enriched data for the UI and DB Update
       const enrichedLeases = leases.map(lease => {
-        try {
-          const ip = lease.address;
-          const mac = lease['mac-address'] || lease.mac_address || lease['active-mac-address'] || lease.mac || '00:00:00:00:00:00';
-          
-          if (!ip) return null; // IP is mandatory for sync
+        const ip = lease.address;
+        const mac = lease['mac-address'] || lease.active_mac_address || lease.mac || '00:00:00:00:00:00';
+        if (!ip) return null;
 
-          const routerComment = lease.comment || '';
-          const routerHost = lease['host-name'] || lease.host_name || '';
-          const finalName = routerComment || routerHost || `Client ${ip}`;
+        const matchingQueue = queues.find(q => String(q.target || '').includes(ip));
+        const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || '1M/1M') : '1M/1M';
 
-          // Match Queue
-          const matchingQueue = queues.find(q => {
-            const target = String(q.target || '');
-            const qName = String(q.name || '');
-            const qComment = String(q.comment || '');
-            return target.includes(ip) || (routerComment && (qName === routerComment || qComment === routerComment));
-          });
-          
-          const speedLimit = matchingQueue ? (matchingQueue['max-limit'] || matchingQueue.max_limit || '1M/1M') : '1M/1M';
-          
-          // Match ARP
-          const matchingArp = arps.find(a => a.address === ip);
-          const arpEnabled = (matchingArp && String(matchingArp.disabled) === 'false') ? 1 : 0;
-
-          // Sync to DB logic (Forceful replace for auto-sync)
-          try {
-            const existing = db.prepare("SELECT id FROM provisioning WHERE mac = ? AND routerId = ?").get(mac, device.id) as any;
-            const id = existing?.id || Math.random().toString(36).substring(7);
-            
-            db.prepare(`
-              INSERT OR REPLACE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(id, ip, mac, finalName, device.id, speedLimit, 'SALIDA', arpEnabled);
-            
-            console.log(`[Manual Sync] ${finalName} (${ip}) synchronized successfully.`);
-          } catch (dbErr: any) {
-            console.error(`[Manual Sync] DB Error for ${ip}:`, dbErr.message);
-          }
-
-          return { 
-            ...lease, 
-            address: ip, 
-            mac_address: mac, 
-            speedLimit, 
-            arpEnabled, 
-            comment: finalName,
-            isProvisioned: true 
-          };
-        } catch (itemErr: any) {
-          console.error(`[Manual Sync] Error processing lease:`, itemErr.message);
-          return null;
-        }
+        return { 
+          ...lease, 
+          address: ip, 
+          mac_address: mac, 
+          speedLimit,
+          isProvisioned: false // Frontend will check against DB
+        };
       }).filter(Boolean);
 
       res.json(enrichedLeases);
     } catch (err: any) {
-      console.error(`[Manual Sync] Critical Failure:`, err.message);
-      res.status(500).json({ error: err.message });
+      console.error(` MikroTik Manual Sync Error:`, err.message);
+      res.status(500).json({ error: `Conexión fallida: ${err.message}. Verifique IP/Usuario/API.` });
     }
   });
 
@@ -923,14 +880,16 @@ async function startServer() {
                 lastBytesStore.set(id, { rx: rxBytes, tx: txBytes, time: now });
                 const currentStatus = iface.running === 'true' ? 'up' : 'down';
                 
+                // Dashboard Traffic Logic (Sum "SALIDA" or "BRIDGE" or "LOCAL")
+                const ifaceTrafficWeight = (nameUC.includes("SALIDA") || nameUC.includes("BRIDGE") || nameUC.includes("LOCAL") || nameUC.includes("LAN")) ? 1 : 0;
+                
                 // WAN Specific Logic
                 if (isWan1 || isWan2) {
                   const wanKey = isWan1 ? "WAN1" : "WAN2";
                   const wanPrettyName = isWan1 ? "AIRTEK" : "INTER";
                   wanStatus[wanKey] = { status: currentStatus, name: wanPrettyName, interface: iface.name, traffic: mbpsIn + mbpsOut };
 
-                  if (isWan1) console.log(`[WAN Monitor] Identified WAN1 (AIRTEK) on interface: ${iface.name}`);
-                  if (isWan2) console.log(`[WAN Monitor] Identified WAN2 (INTER) on interface: ${iface.name}`);
+                  console.log(`[WAN Monitor] Identified ${wanKey} (${wanPrettyName}) on interface: ${iface.name} [Traffic: ${(mbpsIn + mbpsOut).toFixed(2)} Mbps]`);
 
                   // Detect Change for Telegram
                   const lastWanStates = getSetting("wan_states") || {};
@@ -1009,8 +968,8 @@ async function startServer() {
       }
 
       console.log(`[${new Date().toISOString()}] Monitor: Cycle finished`);
-    } catch (err) {
-      console.error("Critical Monitor error", err);
+    } catch (err: any) {
+      console.error("Critical Monitor error:", err.message);
     }
   };
 
@@ -1033,7 +992,7 @@ async function startServer() {
     console.log(`📊 Iniciando monitoreo MikroTik en 5 segundos...`);
     setTimeout(() => {
       monitorDevices();
-      setInterval(monitorDevices, 120000);
+      setInterval(monitorDevices, 60000);
     }, 5000);
   });
 } catch (fatalErr: any) {

@@ -409,7 +409,7 @@ function DashboardView({ devices, logs, oracleData, oracleLoading }: any) {
       if (d.interfaces) {
         d.interfaces.forEach((iface: any) => {
           const name = iface.name.toUpperCase();
-          if (name.includes("SALIDA") || name === "BRIDGE") {
+          if (name.includes("SALIDA") || name.includes("BRIDGE") || name.includes("LOCAL") || name.includes("LAN")) {
             tx += iface.trafficOut || 0;
             rx += iface.trafficIn || 0;
           }
@@ -1271,9 +1271,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
               </TableHeader>
               <TableBody>
                 {leases
-                  .filter(l => l.dynamic === 'true')
+                  .filter(l => String(l.dynamic) === 'true' || l.dynamic === true)
                   .map((l, idx) => {
-                  const isDynamic = l.dynamic === 'true';
+                  const isDynamic = String(l.dynamic) === 'true' || l.dynamic === true;
                   const isProvisioned = provisioning.some((p: any) => 
                     (p.ip === l.address) || 
                     (p.mac && l.mac_address && p.mac.toLowerCase() === l.mac_address.toLowerCase())
