@@ -56,19 +56,29 @@ db.exec(`
     speedLimit TEXT,
     interfaceName TEXT,
     lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(routerId, mac, ip)
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
-// Clean up existing duplicates before enforcing unique index if needed (manual fix)
+// Manual Migrations (Safety for VPS updates)
+try {
+  db.exec("ALTER TABLE provisioning ADD COLUMN routerId TEXT");
+  console.log("Migration: Added routerId to provisioning");
+} catch (e) {}
+
+try {
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_router_mac_ip ON provisioning(routerId, mac, ip)");
+  console.log("Migration: Ensured unique index on provisioning");
+} catch (e) {}
+
+// Clean up existing duplicates before enforce (Manual cleanup)
 try {
   db.exec(`
     DELETE FROM provisioning 
     WHERE rowid NOT IN (
       SELECT MIN(rowid) 
       FROM provisioning 
-      GROUP BY mac
+      GROUP BY mac, ip
     );
   `);
 } catch (e) {}
@@ -162,8 +172,10 @@ const runLocalAnalysis = (devices: any[], logs: any[]) => {
 };
 
 async function startServer() {
-  const app = express();
-  const PORT = 3000;
+  try {
+    console.log("🚀 Iniciando motor del servidor...");
+    const app = express();
+    const PORT = 3000;
 
   app.use(express.json());
 
@@ -1002,11 +1014,9 @@ async function startServer() {
     }
   };
 
-  setInterval(monitorDevices, 120000); // 2 minutes for VPS stability
-  monitorDevices(); // Initial run on startup
-
   // Vite setup
   if (process.env.NODE_ENV !== "production") {
+    console.log("Starting Vite Dev Server...");
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
@@ -1015,7 +1025,21 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT} (SQLite Mode)`));
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✅ EXITO: Servidor escuchando en puerto ${PORT}`);
+    console.log(`🤖 Modo: ${process.env.NODE_ENV === 'production' ? 'PRODUCCIÓN' : 'DESARROLLO'}`);
+    
+    // Start background tasks AFTER server is listening
+    console.log(`📊 Iniciando monitoreo MikroTik en 5 segundos...`);
+    setTimeout(() => {
+      monitorDevices();
+      setInterval(monitorDevices, 120000);
+    }, 5000);
+  });
+} catch (fatalErr: any) {
+  console.error("❌ ERROR FATAL AL INICIAR SERVIDOR:", fatalErr.message);
+  process.exit(1);
+}
 }
 
 startServer();
