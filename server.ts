@@ -267,16 +267,41 @@ async function startServer() {
       });
       await api.connect();
 
-      // 1. DHCP Lease: Make Static + Set Comment
-      const leases = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
-      if (leases.length > 0) {
-        const leaseId = leases[0]['.id'];
-        if (leases[0].dynamic === 'true') {
+      // 1. DHCP Lease: Robust lookup by MAC then IP
+      let leaseId = null;
+      let leaseObj: any = null;
+      
+      const leasesByMac = await api.write('/ip/dhcp-server/lease/print', [`?mac-address=${client.mac}`]);
+      if (leasesByMac.length > 0) {
+        leaseObj = leasesByMac[0];
+        leaseId = leaseObj['.id'];
+      } else {
+        const leasesByIp = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
+        if (leasesByIp.length > 0) {
+          leaseObj = leasesByIp[0];
+          leaseId = leaseObj['.id'];
+        }
+      }
+
+      if (leaseId) {
+        // ROS 6.x make-static if dynamic
+        if (leaseObj.dynamic === 'true') {
           await api.write('/ip/dhcp-server/lease/make-static', [`=.id=${leaseId}`]);
         }
+        // Always update comment and address (ensure alignment)
         await api.write('/ip/dhcp-server/lease/set', [
           `=.id=${leaseId}`,
-          `=comment=${client.deviceName}`
+          `=comment=${client.deviceName}`,
+          `=address=${client.ip}`,
+          `=client-id=` // Clear client-id to avoid conflicts in some ROS versions
+        ]);
+      } else {
+        // If not found, try to add it as static lease
+        await api.write('/ip/dhcp-server/lease/add', [
+          `=address=${client.ip}`,
+          `=mac-address=${client.mac}`,
+          `=comment=${client.deviceName}`,
+          `=server=all`
         ]);
       }
 
@@ -332,7 +357,7 @@ async function startServer() {
 
       return { success: true };
     } catch (err: any) {
-      console.error(`Provisioning Sync Error:`, err.message);
+      console.error(`Provisioning Sync Error [${client.deviceName}]:`, err.message);
       return { success: false, error: err.message };
     } finally {
       if (api) { try { api.close(); } catch (e) {} }
@@ -378,6 +403,24 @@ async function startServer() {
 
     const syncRes = await syncClientToMikroTik(req.params.id);
     res.json({ success: syncRes.success, error: syncRes.error });
+  });
+
+  app.put("/api/provisioning/:id/sync", async (req, res) => {
+    const syncRes = await syncClientToMikroTik(req.params.id);
+    res.json(syncRes);
+  });
+
+  app.post("/api/provisioning/sync-all", async (req, res) => {
+    const clients = db.prepare("SELECT id FROM provisioning").all() as any[];
+    console.log(`[Sync All] Iniciando sincronización masiva de ${clients.length} clientes...`);
+    
+    let successCount = 0;
+    for (const c of clients) {
+      const res = await syncClientToMikroTik(c.id);
+      if (res.success) successCount++;
+    }
+    
+    res.json({ success: true, count: successCount, total: clients.length });
   });
 
   // Logs

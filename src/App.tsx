@@ -11,6 +11,8 @@ import {
   Activity,
   LogOut,
   ShieldCheck,
+  ShieldAlert,
+  Rocket,
   Network,
   RefreshCw,
   AlertTriangle,
@@ -1182,30 +1184,35 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
     setSyncing(false);
   };
 
-  const importLease = async (lease: any) => {
-    try {
-      // Manual import also triggers the full MikroTik logic (Static, Comment, ARP, Queue)
-      await axios.post('/api/provisioning', {
-        deviceName: lease.comment || lease['host-name'] || `CLIENTE ${lease.address}`,
-        ip: lease.address,
-        mac: lease.mac_address,
-        routerId: selectedRouterId,
-        speedLimit: lease.speedLimit || '10M/10M',
-        interfaceName: 'SALIDA',
-        arpEnabled: 1 // Enable by default on import
-      });
-      onRefresh();
-      toast.success(`Cliente Habilitado: ${lease.address}`);
-    } catch (e) {
-      toast.error("Error al habilitar cliente");
-    }
+  const importLease = (lease: any) => {
+    setNewProv({
+      deviceName: lease.comment || lease['host-name'] || `CLIENTE ${lease.address}`,
+      ip: lease.address,
+      mac: lease.mac_address,
+      routerId: selectedRouterId,
+      speedLimit: lease.speedLimit || '10M/10M',
+      interfaceName: 'SALIDA',
+      arpEnabled: 1
+    });
+    setIsAddOpen(true);
   };
 
   const handleAdd = async () => {
-    await axios.post('/api/provisioning', newProv);
-    setIsAddOpen(false);
-    onRefresh();
-    toast.success("Cliente provisionado");
+    setSyncing(true);
+    try {
+      const res = await axios.post('/api/provisioning', newProv);
+      if (res.data.syncError) {
+        toast.error(`Aprovisionado en DB pero error en MikroTik: ${res.data.syncError}`);
+      } else {
+        toast.success("¡CLIENTE ACTIVADO FULL! DHCP/ARP/Queue OK");
+      }
+      setIsAddOpen(false);
+      onRefresh();
+    } catch (e) {
+      toast.error("Error crítico en el sistema de aprovisionamiento");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const toggleArp = async (p: Provisioning) => {
@@ -1234,6 +1241,21 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
           <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-widest mt-1">Sincronización Inteligente DHCP / ARP / Queues</p>
         </div>
         <div className="flex gap-3">
+          <Button 
+            variant="outline" 
+            onClick={async () => {
+              if(window.confirm('¿Sincronizar TODOS los clientes con el MikroTik? Esto aplicará DHCP/ARP/Queues masivamente.')) {
+                try {
+                  const res = await axios.post('/api/provisioning/sync-all');
+                  toast.success(`Sincronización masiva: ${res.data.count}/${res.data.total} OK`);
+                  onRefresh();
+                } catch (e) { toast.error("Error en sincronización masiva"); }
+              }
+            }} 
+            className="border-blue-500/30 text-blue-400 hover:text-white hover:bg-blue-600/20"
+          >
+            <RefreshCw className="w-4 h-4 mr-2" /> Sincronizar Todo
+          </Button>
           <Button variant="outline" onClick={handleCleanup} className="border-zinc-800 text-zinc-500 hover:text-white hover:border-red-500/50">
             <Trash2 className="w-4 h-4 mr-2" /> Limpiar Obsoletos
           </Button>
@@ -1343,10 +1365,47 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
-                        {!isProvisioned && (
-                          <Button size="sm" variant="ghost" className="h-6 text-[10px] text-blue-400" onClick={() => importLease(l)}>
-                            Importar
+                        {!isProvisioned ? (
+                          <Button 
+                            size="sm" 
+                            className="h-7 text-[10px] font-black bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-900/20" 
+                            onClick={() => importLease(l)}
+                          >
+                            <Rocket className="w-3 h-3 mr-1" /> PROVISIONAR
                           </Button>
+                        ) : (
+                          <div className="flex items-center justify-end gap-2">
+                             {(isDynamic) && (
+                               <Button 
+                                size="sm" 
+                                variant="outline"
+                                className="h-7 text-[10px] border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10" 
+                                onClick={async () => {
+                                  try {
+                                    await axios.put(`/api/provisioning/${prov.id}/sync`);
+                                    onRefresh();
+                                    toast.success("Forzado de activación exitoso");
+                                  } catch (e) { toast.error("Error al forzar activación"); }
+                                }}
+                              >
+                                <Zap className="w-3 h-3 mr-1" /> ACTIVAR
+                              </Button>
+                             )}
+                             <Button 
+                              size="sm" 
+                              variant="ghost" 
+                              className="h-7 w-7 p-0 text-emerald-500 hover:text-white hover:bg-emerald-600/20" 
+                              onClick={async () => {
+                                try {
+                                  await axios.put(`/api/provisioning/${prov.id}/sync`);
+                                  onRefresh();
+                                  toast.success("Re-sincronización exitosa");
+                                } catch (e) { toast.error("Error al re-sincronizar"); }
+                              }}
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </Button>
+                          </div>
                         )}
                       </TableCell>
                     </TableRow>
@@ -1401,17 +1460,17 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                 </TableCell>
                 <TableCell>
                   <div className="flex flex-col gap-1">
-                    <div 
-                      onClick={() => toggleArp(p)}
-                      className={`
-                        cursor-pointer px-2 py-0.5 rounded text-[10px] font-black tracking-widest text-center
-                        ${p.arpEnabled 
-                          ? 'bg-green-500/10 text-green-500 border border-green-500/20' 
-                          : 'bg-red-500/10 text-red-500 border border-red-500/20 animate-pulse'}
-                      `}
-                    >
-                      {p.arpEnabled ? 'HABILITADO' : 'CORTADO'}
-                    </div>
+                          {p.arpEnabled ? (
+                            <div className="flex items-center justify-center gap-1.5 px-2 py-0.5 rounded bg-green-500/10 text-green-500 border border-green-500/20">
+                              <ShieldCheck className="w-3 h-3" />
+                              <span className="font-black tracking-widest text-[9px]">EN LÍNEA</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center gap-1.5 px-2 py-0.5 rounded bg-red-500/10 text-red-500 border border-red-500/20 animate-pulse">
+                              <ShieldAlert className="w-3 h-3" />
+                              <span className="font-black tracking-widest text-[9px]">CORTADO</span>
+                            </div>
+                          )}
                     <div className="flex gap-1 justify-center">
                       <div className={`w-1.5 h-1.5 rounded-full ${p.arpEnabled ? 'bg-green-500 shadow-[0_0_5px_#22c55e]' : 'bg-red-500 shadow-[0_0_5px_#ef4444]'}`} />
                       <span className="text-[8px] text-zinc-600 uppercase font-black">ARP</span>
