@@ -916,8 +916,8 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
             </Button>
           )}
           <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-            <DialogTrigger asChild>
-              <Button className="bg-blue-600 hover:bg-blue-700"><Plus className="w-4 h-4 mr-2" /> Agregar</Button>
+            <DialogTrigger render={<Button className="bg-blue-600 hover:bg-blue-700" />}>
+              <Plus className="w-4 h-4 mr-2" /> Agregar
             </DialogTrigger>
             <DialogContent className="bg-[#111] border-[#262626] text-white">
               <DialogHeader><DialogTitle>Nuevo Dispositivo</DialogTitle></DialogHeader>
@@ -1271,7 +1271,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
             <Trash2 className="w-4 h-4 mr-2" /> Limpiar Obsoletos
           </Button>
           <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-            <DialogTrigger asChild><Button className="bg-blue-600"><Plus className="w-4 h-4 mr-2" /> Nuevo Cliente</Button></DialogTrigger>
+            <DialogTrigger render={<Button className="bg-blue-600" />}>
+              <Plus className="w-4 h-4 mr-2" /> Nuevo Cliente
+            </DialogTrigger>
             <DialogContent className="bg-[#0f0f0f] border-[#222] text-white max-w-lg shadow-2xl shadow-blue-900/10">
               <DialogHeader className="border-b border-[#222] pb-4 mb-2">
                 <DialogTitle className="flex items-center gap-2 text-xl font-black italic tracking-tighter">
