@@ -1186,20 +1186,29 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   };
 
   const importLease = (lease: any) => {
-    // Si no tiene un nombre real (host-name o comment existente), se deja vacío para obligar al usuario a escribirlo.
-    const rawName = lease.comment || lease['host-name'] || '';
-    const suggestedName = rawName.toUpperCase().includes('CLIENTE') ? '' : rawName;
+    // Buscar si ya existe este cliente en nuestra base de datos (por IP o MAC)
+    const existing = provisioning.find(p => p.mac === lease.mac_address || p.ip === lease.address);
+    
+    if (existing) {
+      setNewProv({
+        ...existing,
+        routerId: selectedRouterId
+      });
+    } else {
+      const rawName = lease.comment || lease['host-name'] || '';
+      const suggestedName = rawName.toUpperCase().includes('CLIENTE') ? '' : rawName;
 
-    setNewProv({
-      deviceName: suggestedName,
-      ip: lease.address,
-      mac: lease.mac_address,
-      routerId: selectedRouterId,
-      speedLimit: lease.speedLimit || '10M/10M',
-      queueType: 'default-small',
-      interfaceName: 'SALIDA',
-      arpEnabled: 1
-    });
+      setNewProv({
+        deviceName: suggestedName,
+        ip: lease.address,
+        mac: lease.mac_address,
+        routerId: selectedRouterId,
+        speedLimit: '10M/10M',
+        queueType: 'default-small',
+        interfaceName: 'SALIDA',
+        arpEnabled: 1
+      });
+    }
     setIsAddOpen(true);
   };
 
@@ -1431,14 +1440,14 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {isDynamic ? (
-                            <Badge variant="outline" className="text-[8px] border-yellow-500/50 text-yellow-500">DINÁMICA</Badge>
+                            <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-400 bg-blue-500/10 font-black tracking-tighter">NUEVA / DINÁMICA</Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[8px] border-blue-500/50 text-blue-400 bg-blue-500/5">ESTÁTICA (AUTO-SYNC)</Badge>
+                            <Badge variant="outline" className="text-[8px] border-zinc-700/50 text-zinc-500 italic">ESTÁTICA (AUTO-SYNC)</Badge>
                           )}
                           {isProvisioned ? (
                             <Badge variant="outline" className="text-[8px] border-green-500/50 text-green-500 bg-green-500/5">VINCULADO</Badge>
                           ) : (
-                            <Badge variant="outline" className="text-[8px] border-zinc-500/50 text-zinc-500">NO VINCULADO</Badge>
+                            <Badge variant="outline" className="text-[8px] border-zinc-500/50 text-zinc-500">SIN VINCULAR</Badge>
                           )}
                           {isProvisioned && prov.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO</Badge>}
                           {isProvisioned && prov.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-emerald-500/20 text-emerald-500/70">ACTIVO</Badge>}
@@ -1446,33 +1455,28 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
-                        {!isProvisioned ? (
-                          <Button 
-                            size="sm" 
-                            className="h-7 text-[10px] font-black bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-900/20" 
-                            onClick={() => importLease(l)}
-                          >
-                            <Rocket className="w-3 h-3 mr-1" /> PROVISIONAR
-                          </Button>
-                        ) : (
-                          <div className="flex items-center justify-end gap-2">
-                             {(isDynamic) && (
-                               <Button 
+                        <div className="flex items-center justify-end gap-2">
+                          {(!isProvisioned || isDynamic) ? (
+                            <Button 
+                              size="sm" 
+                              className="h-7 text-[10px] font-black bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-900/40 animate-pulse border-b-2 border-blue-800" 
+                              onClick={() => importLease(l)}
+                            >
+                              <Rocket className="w-3 h-3 mr-1" /> PROVISIONAR
+                            </Button>
+                          ) : (
+                            <>
+                              <Button 
                                 size="sm" 
                                 variant="outline"
-                                className="h-7 text-[10px] border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10" 
-                                onClick={async () => {
-                                  try {
-                                    await axios.put(`/api/provisioning/${prov.id}/sync`);
-                                    onRefresh();
-                                    toast.success("Forzado de activación exitoso");
-                                  } catch (e) { toast.error("Error al forzar activación"); }
-                                }}
+                                title="Editar Configuración"
+                                className="h-7 text-[10px] border-zinc-800 text-zinc-400 hover:bg-zinc-800/50" 
+                                onClick={() => importLease(l)}
                               >
-                                <Zap className="w-3 h-3 mr-1" /> ACTIVAR
+                                <Rocket className="w-3 h-3 mr-1" /> EDITAR
                               </Button>
-                             )}
-                             <Button 
+
+                              <Button 
                                 size="sm" 
                                 variant="outline"
                                 title={prov.arpEnabled ? "Cortar Internet" : "Activar Internet"}
@@ -1487,22 +1491,25 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                               >
                                 {prov.arpEnabled ? <ShieldAlert className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
                               </Button>
-                             <Button 
-                              size="sm" 
-                              variant="ghost" 
-                              className="h-7 w-7 p-0 text-emerald-500 hover:text-white hover:bg-emerald-600/20" 
-                              onClick={async () => {
-                                try {
-                                  await axios.put(`/api/provisioning/${prov.id}/sync`);
-                                  onRefresh();
-                                  toast.success("Re-sincronización exitosa");
-                                } catch (e) { toast.error("Error al re-sincronizar"); }
-                              }}
-                            >
-                              <RefreshCw className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        )}
+
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-7 w-7 p-0 text-emerald-500 hover:text-white hover:bg-emerald-600/20" 
+                                title="Sincronizar MikroTik"
+                                onClick={async () => {
+                                  try {
+                                    await axios.put(`/api/provisioning/${prov.id}/sync`);
+                                    onRefresh();
+                                    toast.success("Sincronización exitosa");
+                                  } catch (e) { toast.error("Error al sincronizar"); }
+                                }}
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
