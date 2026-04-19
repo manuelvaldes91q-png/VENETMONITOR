@@ -775,13 +775,14 @@ async function startServer() {
 
           // Master Sync and Stats
           if (device.type === 'router' && result.alive && device.username && device.password) {
+            let api: any = null;
             try {
-              const api = new RouterOSAPI({
+              api = new RouterOSAPI({
                 host: device.ip,
                 user: device.username,
                 password: device.password,
                 port: device.apiPort || 8728,
-                timeout: 30 // Increased timeout
+                timeout: 30
               });
               await api.connect();
               
@@ -790,8 +791,7 @@ async function startServer() {
               const rawArps = await api.write('/ip/arp/print');
               const rawResources = await api.write('/system/resource/print');
               const rawInterfaces = await api.write('/interface/print', ['=.proplist=.id,name,comment,rx-byte,tx-byte,running,disabled,type']);
-              api.close();
-
+              
               const leases = Array.isArray(rawLeases) ? rawLeases : (rawLeases ? [rawLeases] : []);
               const queues = Array.isArray(rawQueues) ? rawQueues : (rawQueues ? [rawQueues] : []);
               const arps = Array.isArray(rawArps) ? rawArps : (rawArps ? [rawArps] : []);
@@ -958,9 +958,12 @@ async function startServer() {
                 setSetting("global", { ...globalState, wanStatus: currentWanInfo });
               }
 
-              api.close();
             } catch (apiErr: any) {
               console.error(` MikroTik Sync Error (${device.name}):`, apiErr.message);
+            } finally {
+              if (api) {
+                try { api.close(); } catch (e) {}
+              }
             }
           }
         } catch (deviceErr) {
@@ -1021,12 +1024,15 @@ async function startServer() {
     console.log(`✅ EXITO: Servidor escuchando en puerto ${PORT}`);
     console.log(`🤖 Modo: ${process.env.NODE_ENV === 'production' ? 'PRODUCCIÓN' : 'DESARROLLO'}`);
     
+    // Monitoring Loop pulse
+    const runMonitorPulse = async () => {
+      await monitorDevices();
+      setTimeout(runMonitorPulse, 30000); // Pulse every 30s
+    };
+
     // Start background tasks AFTER server is listening
     console.log(`📊 Iniciando monitoreo MikroTik en 2 segundos...`);
-    setTimeout(() => {
-      monitorDevices();
-      setInterval(monitorDevices, 30000); // Polling every 30s for more real-time feel
-    }, 2000);
+    setTimeout(runMonitorPulse, 2000);
   });
 } catch (fatalErr: any) {
   console.error("❌ ERROR FATAL AL INICIAR SERVIDOR:", fatalErr.message);
