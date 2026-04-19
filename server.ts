@@ -54,6 +54,7 @@ db.exec(`
     dhcpLease INTEGER DEFAULT 1,
     arpEnabled INTEGER DEFAULT 1,
     speedLimit TEXT,
+    queueType TEXT DEFAULT 'default-small',
     interfaceName TEXT,
     lastSeen DATETIME DEFAULT CURRENT_TIMESTAMP,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -67,12 +68,13 @@ try {
 } catch (e) {}
 
 try {
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_router_mac_ip ON provisioning(routerId, mac, ip)");
-  console.log("Migration: Ensured unique index on provisioning");
+  db.exec("ALTER TABLE provisioning ADD COLUMN queueType TEXT DEFAULT 'default-small'");
+  console.log("Migration: Added queueType to provisioning");
 } catch (e) {}
 
-// Clean up existing duplicates before enforce (Manual cleanup)
+// Robust Unique Enforcement: MAC and IP must be unique globally in the provisioning system
 try {
+  // 1. First, delete any pre-existing duplicates to allow index creation
   db.exec(`
     DELETE FROM provisioning 
     WHERE rowid NOT IN (
@@ -81,7 +83,13 @@ try {
       GROUP BY mac, ip
     );
   `);
-} catch (e) {}
+  // 2. Create the index
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_mac ON provisioning(mac)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_prov_ip ON provisioning(ip)");
+  console.log("Migration: Global unique indices for MAC and IP enforced.");
+} catch (e) {
+  console.error("Migration error:", e.message);
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS interfaces (
@@ -344,14 +352,16 @@ async function startServer() {
           `=name=${client.deviceName}`,
           `=comment=${client.deviceName}`,
           `=target=${client.ip}/32`,
-          `=max-limit=${client.speedLimit}`
+          `=max-limit=${client.speedLimit}`,
+          `=queue=${client.queueType || 'default-small'}/default-small`
         ]);
       } else {
         await api.write('/queue/simple/add', [
           `=name=${client.deviceName}`,
           `=comment=${client.deviceName}`,
           `=target=${client.ip}/32`,
-          `=max-limit=${client.speedLimit}`
+          `=max-limit=${client.speedLimit}`,
+          `=queue=${client.queueType || 'default-small'}/default-small`
         ]);
       }
 
@@ -372,15 +382,32 @@ async function startServer() {
 
   app.post("/api/provisioning", async (req, res) => {
     const p = req.body;
-    const id = Math.random().toString(36).substring(7);
-    db.prepare(`
-      INSERT OR IGNORE INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName || 'SALIDA', p.arpEnabled ? 1 : 0);
     
-    // Atomic synchronization
-    const syncRes = await syncClientToMikroTik(id);
-    res.json({ id, ...p, syncError: syncRes.error });
+    // Check for duplicates before anything else
+    const existingByIp = db.prepare("SELECT deviceName FROM provisioning WHERE ip = ?").get(p.ip) as any;
+    if (existingByIp) {
+      return res.status(400).json({ error: `La IP ${p.ip} ya está asignada al cliente: ${existingByIp.deviceName}` });
+    }
+
+    const existingByMac = db.prepare("SELECT deviceName FROM provisioning WHERE mac = ?").get(p.mac) as any;
+    if (existingByMac) {
+      return res.status(400).json({ error: `La MAC ${p.mac} ya está registrada por el cliente: ${existingByMac.deviceName}` });
+    }
+
+    const id = Math.random().toString(36).substring(7);
+    try {
+      db.prepare(`
+        INSERT INTO provisioning (id, ip, mac, deviceName, routerId, speedLimit, interfaceName, arpEnabled, lastSeen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).run(id, p.ip, p.mac, p.deviceName, p.routerId, p.speedLimit, p.interfaceName || 'SALIDA', p.arpEnabled ? 1 : 0);
+      
+      // Atomic synchronization
+      const syncRes = await syncClientToMikroTik(id);
+      res.json({ id, ...p, syncError: syncRes.error });
+    } catch (err: any) {
+      console.error("Database Insert Error:", err.message);
+      res.status(500).json({ error: "Error al guardar en base de datos. Verifique los datos." });
+    }
   });
 
   app.post("/api/provisioning/cleanup", (req, res) => {
@@ -408,6 +435,49 @@ async function startServer() {
   app.put("/api/provisioning/:id/sync", async (req, res) => {
     const syncRes = await syncClientToMikroTik(req.params.id);
     res.json(syncRes);
+  });
+
+  app.delete("/api/provisioning/:id", async (req, res) => {
+    const client = db.prepare("SELECT * FROM provisioning WHERE id = ?").get(req.params.id) as any;
+    if (!client) return res.status(404).json({ error: "Client not found" });
+
+    const router = db.prepare("SELECT * FROM devices WHERE id = ?").get(client.routerId) as any;
+    
+    // Remote Cleanup on MikroTik
+    if (router && router.status === 'up') {
+      let api: any = null;
+      try {
+        api = new RouterOSAPI({
+          host: router.ip, user: router.username, password: router.password,
+          port: router.apiPort || 8728, timeout: 10
+        });
+        await api.connect();
+
+        // 1. Delete Lease
+        const leases = await api.write('/ip/dhcp-server/lease/print', [`?address=${client.ip}`]);
+        for (const l of leases) await api.write('/ip/dhcp-server/lease/remove', [`=.id=${l['.id']}`]);
+
+        // 2. Delete ARP
+        const arps = await api.write('/ip/arp/print', [`?address=${client.ip}`]);
+        for (const a of arps) await api.write('/ip/arp/remove', [`=.id=${a['.id']}`]);
+
+        // 3. Delete Queue
+        const queues = await api.write('/queue/simple/print', [`?target=${client.ip}/32`]);
+        for (const q of queues) await api.write('/queue/simple/remove', [`=.id=${q['.id']}`]);
+        
+        const qByName = await api.write('/queue/simple/print', [`?name=${client.deviceName}`]);
+        for (const q of qByName) await api.write('/queue/simple/remove', [`=.id=${q['.id']}`]);
+
+      } catch (err: any) {
+        console.error(`Cleanup Error for ${client.deviceName} on router:`, err.message);
+      } finally {
+        if (api) { try { api.close(); } catch (e) {} }
+      }
+    }
+
+    // Always delete from local DB
+    db.prepare("DELETE FROM provisioning WHERE id = ?").run(req.params.id);
+    res.json({ success: true, message: "Client and MikroTik entries removed" });
   });
 
   app.post("/api/provisioning/sync-all", async (req, res) => {

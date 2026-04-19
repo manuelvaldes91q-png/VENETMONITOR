@@ -91,6 +91,7 @@ interface Provisioning {
   dhcpLease: boolean;
   arpEnabled: boolean;
   speedLimit: string;
+  queueType: string;
   interfaceName: string;
   lastSeen?: string;
   createdAt: string;
@@ -1113,7 +1114,7 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
 
 function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [newProv, setNewProv] = useState<Partial<Provisioning>>({ speedLimit: '10M/10M', interfaceName: 'SALIDA' });
+  const [newProv, setNewProv] = useState<Partial<Provisioning>>({ speedLimit: '10M/10M', interfaceName: 'SALIDA', queueType: 'default-small' });
   const [leases, setLeases] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [selectedRouterId, setSelectedRouterId] = useState("");
@@ -1185,12 +1186,17 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   };
 
   const importLease = (lease: any) => {
+    // Si no tiene un nombre real (host-name o comment existente), se deja vacío para obligar al usuario a escribirlo.
+    const rawName = lease.comment || lease['host-name'] || '';
+    const suggestedName = rawName.toUpperCase().includes('CLIENTE') ? '' : rawName;
+
     setNewProv({
-      deviceName: lease.comment || lease['host-name'] || `CLIENTE ${lease.address}`,
+      deviceName: suggestedName,
       ip: lease.address,
       mac: lease.mac_address,
       routerId: selectedRouterId,
       speedLimit: lease.speedLimit || '10M/10M',
+      queueType: 'default-small',
       interfaceName: 'SALIDA',
       arpEnabled: 1
     });
@@ -1212,8 +1218,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
       }
       setIsAddOpen(false);
       onRefresh();
-    } catch (e) {
-      toast.error("Error crítico en el sistema de aprovisionamiento");
+    } catch (e: any) {
+      const errorMsg = e.response?.data?.error || "Error crítico en el sistema de aprovisionamiento";
+      toast.error(errorMsg);
     } finally {
       setSyncing(false);
     }
@@ -1265,60 +1272,102 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
           </Button>
           <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
             <DialogTrigger asChild><Button className="bg-blue-600"><Plus className="w-4 h-4 mr-2" /> Nuevo Cliente</Button></DialogTrigger>
-            <DialogContent className="bg-[#111] border-[#262626] text-white">
-              <DialogHeader><DialogTitle>Aprovisionar Cliente</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <Label>Nombre del Cliente (DHCP/ARP/Queue)</Label>
-                  <Input 
-                    placeholder="Ej: Juan Perez" 
-                    className="bg-[#1a1a1a] border-[#262626]" 
-                    value={newProv.deviceName || ''} 
-                    onChange={e => setNewProv({...newProv, deviceName: e.target.value})} 
-                  />
+            <DialogContent className="bg-[#0f0f0f] border-[#222] text-white max-w-lg shadow-2xl shadow-blue-900/10">
+              <DialogHeader className="border-b border-[#222] pb-4 mb-2">
+                <DialogTitle className="flex items-center gap-2 text-xl font-black italic tracking-tighter">
+                  <Rocket className="w-5 h-5 text-blue-500" /> SISTEMA DE ACTIVACIÓN
+                </DialogTitle>
+                <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Configurador de Arrendamiento DHCP / ARP / Queues</p>
+              </DialogHeader>
+              <div className="space-y-6 py-4">
+                <div className="p-4 bg-blue-500/5 border border-blue-500/10 rounded-lg space-y-3">
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-black text-blue-400 uppercase tracking-widest bg-blue-400/10 px-2 py-0.5 rounded">
+                      1. Identificación (Comment en MikroTik) *
+                    </Label>
+                    <Input 
+                      placeholder="Ingrese Nombre del Cliente..." 
+                      className="bg-[#141414] border-[#262626] focus:border-blue-500 h-10 font-mono text-sm" 
+                      value={newProv.deviceName || ''} 
+                      onChange={e => setNewProv({...newProv, deviceName: e.target.value})} 
+                      autoFocus
+                    />
+                  </div>
                 </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>IP Address</Label>
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">IP Asignada (Static)</Label>
                     <Input 
-                      placeholder="192.168.88.50" 
-                      className="bg-[#1a1a1a] border-[#262626]" 
+                      className="bg-[#141414] border-[#262626] font-mono text-xs opacity-80" 
                       value={newProv.ip || ''} 
                       onChange={e => setNewProv({...newProv, ip: e.target.value})} 
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>MAC Address</Label>
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">MAC Address</Label>
                     <Input 
-                      placeholder="AA:BB:CC..." 
-                      className="bg-[#1a1a1a] border-[#262626]" 
+                      className="bg-[#141414] border-[#262626] font-mono text-xs opacity-80" 
                       value={newProv.mac || ''} 
                       onChange={e => setNewProv({...newProv, mac: e.target.value})} 
                     />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+
+                <div className="grid grid-cols-2 gap-4 border-t border-[#222] pt-4">
                   <div className="space-y-2">
-                    <Label>Límite Velocidad (Queues)</Label>
+                    <Label className="text-[10px] font-black text-emerald-400 uppercase tracking-widest bg-emerald-400/10 px-2 py-0.5 rounded">
+                      2. Plan Velocidad (Queues) *
+                    </Label>
                     <Input 
-                      placeholder="5M/5M" 
-                      className="bg-[#1a1a1a] border-[#262626]" 
+                      placeholder="Ej: 5M/5M" 
+                      className="bg-[#141414] border-[#262626] focus:border-emerald-500 font-mono text-sm" 
                       value={newProv.speedLimit || '10M/10M'} 
                       onChange={e => setNewProv({...newProv, speedLimit: e.target.value})} 
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Interfaz MikroTik</Label>
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Tipo de Cola (Queue Type)</Label>
+                    <select 
+                      className="w-full h-10 bg-[#141414] border border-[#262626] rounded-md px-3 text-sm font-mono focus:border-blue-500 outline-none"
+                      value={newProv.queueType || 'default-small'}
+                      onChange={e => setNewProv({...newProv, queueType: e.target.value})}
+                    >
+                      <option value="default-small">Default Small (Standard)</option>
+                      <option value="default">Default (Generic)</option>
+                      <option value="pcq-download-default">PCQ Download (Balanced)</option>
+                      <option value="pcq-upload-default">PCQ Upload (Balanced)</option>
+                      <option value="hotspot-default">Hotspot (Aggressive)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Interfaz Salida</Label>
                     <Input 
-                      placeholder="bridge-local" 
-                      className="bg-[#1a1a1a] border-[#262626]" 
+                      className="bg-[#141414] border-[#262626] font-mono text-xs" 
                       value={newProv.interfaceName || 'SALIDA'} 
                       onChange={e => setNewProv({...newProv, interfaceName: e.target.value})} 
                     />
                   </div>
                 </div>
               </div>
-              <DialogFooter><Button onClick={handleAdd} className="bg-blue-600 w-full">Vincular y Activar</Button></DialogFooter>
+              <DialogFooter className="bg-[#141414] p-4 -mx-6 -mb-6 border-t border-[#222]">
+                <Button 
+                  onClick={handleAdd} 
+                  disabled={syncing}
+                  className="bg-blue-600 hover:bg-blue-700 w-full h-11 font-black italic tracking-widest shadow-lg shadow-blue-600/20"
+                >
+                  {syncing ? (
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="w-4 h-4 animate-spin" /> PROVISIONANDO...
+                    </div>
+                  ) : (
+                    "VINCULAR Y ACTIVAR INTERNET"
+                  )}
+                </Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
@@ -1389,8 +1438,9 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                           ) : (
                             <Badge variant="outline" className="text-[8px] border-zinc-500/50 text-zinc-500">NO VINCULADO</Badge>
                           )}
-                          {l.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO</Badge>}
-                          {l.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-emerald-500/20 text-emerald-500/70">ACTIVO</Badge>}
+                          {isProvisioned && prov.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-red-500/10 text-red-500 border-red-500/20 px-1">CORTADO</Badge>}
+                          {isProvisioned && prov.arpEnabled === 1 && <Badge variant="outline" className="text-[8px] border-emerald-500/20 text-emerald-500/70">ACTIVO</Badge>}
+                          {!isProvisioned && l.arpEnabled === 0 && <Badge variant="danger" className="text-[8px] bg-zinc-800 text-zinc-500 border-zinc-700 px-1 italic">AISLADO (ARP NO CONFIG)</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
@@ -1420,6 +1470,21 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
                                 <Zap className="w-3 h-3 mr-1" /> ACTIVAR
                               </Button>
                              )}
+                             <Button 
+                                size="sm" 
+                                variant="outline"
+                                title={prov.arpEnabled ? "Cortar Internet" : "Activar Internet"}
+                                className={`h-7 w-7 p-0 ${prov.arpEnabled ? 'border-red-500/30 text-red-500 hover:bg-red-500/10' : 'border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10'}`}
+                                onClick={async () => {
+                                  try {
+                                    await axios.patch(`/api/provisioning/${prov.id}`, { arpEnabled: !prov.arpEnabled });
+                                    onRefresh();
+                                    toast.success(prov.arpEnabled ? "Servicio CORTADO" : "Servicio ACTIVADO");
+                                  } catch (e) { toast.error("Error al cambiar estado"); }
+                                }}
+                              >
+                                {prov.arpEnabled ? <ShieldAlert className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                              </Button>
                              <Button 
                               size="sm" 
                               variant="ghost" 
