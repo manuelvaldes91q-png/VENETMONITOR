@@ -175,8 +175,8 @@ export default function App() {
   useEffect(() => {
     if (isLoggedIn) {
       fetchData();
-      const interval = setInterval(fetchData, 60000); // Poll every 60s to save VPS traffic (1GB limit)
-      return () => clearInterval(interval);
+      // Automatic polling disabled for Zero-Traffic mode. 
+      // Status updates are handled via Push Webhooks from MikroTik.
     }
   }, [isLoggedIn]);
 
@@ -339,9 +339,8 @@ export default function App() {
 
 // --- Sub-Views ---
 
-function DashboardView({ devices, logs, settings }: any) {
+function DashboardView({ devices, settings }: any) {
   const [globalStats, setGlobalStats] = useState<any>(null);
-  const [selectedInterface, setSelectedInterface] = useState<string>('WAN1');
 
   const stats = useMemo(() => {
     const routers = devices.filter((d: any) => d.type === 'router');
@@ -363,20 +362,18 @@ function DashboardView({ devices, logs, settings }: any) {
       } catch (e) {}
     };
     fetchStats();
-    const inv = setInterval(fetchStats, 300000); // Polling cada 5 minutos (300s)
-    return () => clearInterval(inv);
   }, [devices]);
 
   return (
     <div className="space-y-6 select-none">
       <header className="flex justify-between items-end border-b border-[#004400] pb-4">
         <div>
-          <h2 className="text-2xl font-black tracking-[0.3em] uppercase underline decoration-double">SYS_STATUS</h2>
-          <p className="text-[9px] text-[#008800] font-bold uppercase tracking-widest mt-1">[ VNET-OS TERMINAL / TRAFFIC: OPTIMIZED ]</p>
+          <h2 className="text-2xl font-black tracking-[0.3em] uppercase underline decoration-double">LINK_GATEWAY</h2>
+          <p className="text-[9px] text-[#008800] font-bold uppercase tracking-widest mt-1">[ CLOUD_PASSIVE_GATEWAY / ZERO_TRAFFIC_POLL ]</p>
         </div>
         <div className="terminal-box py-1 px-3 border-[#00ff00]">
-          <span className="text-[8px] text-[#008800] block">GOOGLE_DNS</span>
-          <span className="text-sm font-bold">{globalStats?.googleLatency || 0}ms</span>
+          <span className="text-[8px] text-[#008800] block">LAST_EVENT</span>
+          <span className="text-sm font-bold uppercase text-[#00ff00]">PUSH_READY</span>
         </div>
       </header>
 
@@ -385,13 +382,13 @@ function DashboardView({ devices, logs, settings }: any) {
           const data = globalStats?.wanStatus?.[wan];
           const isUp = data?.status === 'up';
           return (
-            <div key={wan} className={`terminal-box border-l-4 ${isUp ? 'border-l-[#00ff00]' : 'border-l-red-600 animate-pulse'}`}>
+            <div key={wan} className={`terminal-box border-l-4 ${isUp ? 'border-l-[#00ff00]' : 'border-l-red-600'}`}>
               <div className="flex justify-between items-center px-1">
                 <div>
                   <h3 className="text-[9px] text-[#008800] uppercase font-bold">{wan} :: {data?.name || 'LINK'}</h3>
-                  <div className="text-xl font-black mt-1">{data?.trafficStr || '0.00 Mbps'}</div>
+                  <div className={`text-xl font-black mt-1 ${isUp ? 'text-[#00ff00]' : 'text-red-600'}`}>{isUp ? 'OPERATIVE' : 'NO_SIGNAL'}</div>
                 </div>
-                <div className="text-[10px] font-bold">[{isUp ? 'OK' : 'FAIL'}]</div>
+                <div className="text-[10px] font-bold">[{isUp ? 'UP' : 'DOWN'}]</div>
               </div>
             </div>
           );
@@ -400,10 +397,10 @@ function DashboardView({ devices, logs, settings }: any) {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'RT_ONLINE', val: `${stats.routersUp}/${stats.routersUp + stats.routersDown}`, color: 'text-[#00ff00]' },
-          { label: 'ANT_ONLINE', val: `${stats.antennasUp}/${stats.antennasUp + stats.antennasDown}`, color: 'text-[#00ff00]' },
-          { label: 'SYS_ENTITIES', val: devices.length, color: 'text-white' },
-          { label: 'B_NOTIFIER', val: settings?.telegramBotToken ? 'ACTIVE' : 'OFF', color: settings?.telegramBotToken ? 'text-[#00ff00]' : 'text-[#004400]' },
+          { label: 'RT_STATUS', val: `${stats.routersUp}/${stats.routersUp + stats.routersDown}`, color: 'text-[#00ff00]' },
+          { label: 'ANT_STATUS', val: `${stats.antennasUp}/${stats.antennasUp + stats.antennasDown}`, color: 'text-[#00ff00]' },
+          { label: 'PUSH_NODES', val: devices.length, color: 'text-white' },
+          { label: 'CORE_GATEWAY', val: 'STANDBY', color: 'text-[#008800]' },
         ].map((s, i) => (
           <div key={i} className="terminal-box py-2 flex flex-col items-center justify-center border-dashed border-[#004400]">
             <span className="text-[8px] font-bold text-[#008800] uppercase">{s.label}</span>
@@ -412,24 +409,17 @@ function DashboardView({ devices, logs, settings }: any) {
         ))}
       </div>
 
-      <div className="terminal-box p-0 overflow-hidden">
-        <div className="terminal-header">
-           <span className="text-[10px] font-bold">NODE_TRAFFIC_ANALYSIS (LINK_UP)</span>
-           <div className="flex gap-1">
-              <button onClick={() => setSelectedInterface('WAN1')} className={`px-2 py-0.5 text-[8px] font-bold border ${selectedInterface === 'WAN1' ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'text-[#008800] border-[#004400]'}`}>WAN1</button>
-              <button onClick={() => setSelectedInterface('WAN2')} className={`px-2 py-0.5 text-[8px] font-bold border ${selectedInterface === 'WAN2' ? 'bg-[#00ff00] text-black border-[#00ff00]' : 'text-[#008800] border-[#004400]'}`}>WAN2</button>
-           </div>
-        </div>
-        <div className="h-44 p-4">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={logs.slice(-15).map((l: any) => ({ time: format(new Date(l.timestamp), 'HH:mm'), val: Math.random() * 50 }))}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#002200" vertical={false} />
-              <XAxis dataKey="time" stroke="#004400" fontSize={8} axisLine={false} tickLine={false} />
-              <YAxis stroke="#004400" fontSize={8} axisLine={false} tickLine={false} domain={[0, 'auto']} />
-              <Area type="stepAfter" dataKey="val" stroke="#00ff00" fill="#00ff00" fillOpacity={0.1} strokeWidth={1} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+      <div className="terminal-box p-4 border-[#004400] bg-[#001100]/20">
+         <div className="flex items-start gap-3">
+            <Terminal className="w-4 h-4 text-[#00ff00] mt-1" />
+            <div className="space-y-1">
+               <h4 className="text-[10px] font-bold uppercase text-[#00ff00]">Modo Pasarela MikroTik Activo</h4>
+               <p className="text-[9px] text-[#008800] leading-relaxed">
+                  El sistema no genera tráfico saliente por monitoreo. El estado de WANs y Antenas se actualiza únicamente vía PUSH Webhook desde el MikroTik local. 
+                  Asegúrate de que tus scripts de Netwatch estén enviando notificaciones al endpoint del VPS para ver cambios aquí.
+               </p>
+            </div>
+         </div>
       </div>
     </div>
   );
