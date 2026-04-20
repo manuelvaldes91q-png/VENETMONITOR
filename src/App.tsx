@@ -380,15 +380,31 @@ function DashboardView({ devices, settings }: any) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {['WAN1', 'WAN2'].map(wan => {
           const data = globalStats?.wanStatus?.[wan];
-          const isUp = data?.status === 'up';
+          const status = data?.status || 'waiting';
+          const isUp = status === 'up';
+          const isDown = status === 'down';
+          const isWaiting = status === 'waiting';
+
           return (
-            <div key={wan} className={`terminal-box border-l-4 ${isUp ? 'border-l-[#00ff00]' : 'border-l-red-600'}`}>
+            <div key={wan} className={`terminal-box border-l-4 ${
+              isUp ? 'border-l-[#00ff00]' : 
+              isDown ? 'border-l-red-600' : 
+              'border-l-orange-500 animate-pulse'
+            }`}>
               <div className="flex justify-between items-center px-1">
                 <div>
                   <h3 className="text-[9px] text-[#008800] uppercase font-bold">{wan} :: {data?.name || 'LINK'}</h3>
-                  <div className={`text-xl font-black mt-1 ${isUp ? 'text-[#00ff00]' : 'text-red-600'}`}>{isUp ? 'OPERATIVE' : 'NO_SIGNAL'}</div>
+                  <div className={`text-xl font-black mt-1 ${
+                    isUp ? 'text-[#00ff00]' : 
+                    isDown ? 'text-red-600' : 
+                    'text-orange-500'
+                  }`}>
+                    {isUp ? 'OPERATIVE' : isDown ? 'NO_SIGNAL' : 'WAITING_SIGNAL'}
+                  </div>
                 </div>
-                <div className="text-[10px] font-bold">[{isUp ? 'UP' : 'DOWN'}]</div>
+                <div className="text-[10px] font-bold">
+                  [{isUp ? 'UP' : isDown ? 'DOWN' : '??'}]
+                </div>
               </div>
             </div>
           );

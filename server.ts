@@ -947,6 +947,16 @@ async function startServer() {
     app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
+  // Reset global states for Passive Gateway mode
+  const currentGlobal = getSetting("global") || {};
+  setSetting("global", {
+    ...currentGlobal,
+    wanStatus: {
+      WAN1: { status: 'waiting', name: 'AIRTEK' },
+      WAN2: { status: 'waiting', name: 'INTER' }
+    }
+  });
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`✅ PASARELA ACTIVA: Servidor escuchando en puerto ${PORT}`);
     console.log(`🤖 Modo: REACTIVO PERSISTENTE`);
