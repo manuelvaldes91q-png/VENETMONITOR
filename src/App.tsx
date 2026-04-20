@@ -363,7 +363,7 @@ function DashboardView({ devices, logs, settings }: any) {
       } catch (e) {}
     };
     fetchStats();
-    const inv = setInterval(fetchStats, 60000); // Polling cada 60s
+    const inv = setInterval(fetchStats, 300000); // Polling cada 5 minutos (300s)
     return () => clearInterval(inv);
   }, [devices]);
 
@@ -565,7 +565,7 @@ function ProvisioningView({ provisioning, devices, onRefresh }: any) {
   useEffect(() => {
     if (selectedRouterId) {
       fetchLeases(selectedRouterId);
-      const inv = setInterval(() => fetchLeases(selectedRouterId), 60000);
+      const inv = setInterval(() => fetchLeases(selectedRouterId), 300000); // 5 min
       return () => clearInterval(inv);
     }
   }, [selectedRouterId]);
@@ -882,6 +882,37 @@ function SettingsView({ settings, onRefresh }: any) {
           <button onClick={handleSave} className="terminal-btn flex-1 bg-[#00ff00] text-black">
             SAV_PROTOCOL_COMMIT
           </button>
+        </div>
+      </div>
+
+      <div className="terminal-box max-w-4xl border-dashed border-[#004400]">
+        <div className="terminal-header text-[10px] uppercase font-bold text-[#00ff00]">MIKROTIK_PUSH_CONFIGURATION (CLI)</div>
+        <div className="p-4 space-y-4">
+           <p className="text-[10px] text-[#008800] uppercase font-bold">Copia y pega estos comandos en tu terminal MikroTik para activar el monitoreo reactivo y ahorrar datos:</p>
+           
+           <div className="space-y-4">
+             <div>
+               <Label className="text-[9px] text-zinc-500 font-mono"># 01. WAN1 MONITOR (PING 8.8.8.8)</Label>
+               <pre className="bg-[#001100] p-3 text-[9px] text-[#00ff00] overflow-x-auto border border-[#004400]">
+{`/tool netwatch add host=8.8.8.8 interval=30s \\
+    up-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"WAN1\\\\\\",\\\\\\"status\\\\\\":\\\\\\"up\\\\\\"}\\" keep-result=no" \\
+    down-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"WAN1\\\\\\",\\\\\\"status\\\\\\":\\\\\\"down\\\\\\"}\\" keep-result=no"`}
+               </pre>
+             </div>
+
+             <div>
+               <Label className="text-[9px] text-zinc-500 font-mono"># 02. WAN2 MONITOR (PING 9.9.9.9)</Label>
+               <pre className="bg-[#001100] p-3 text-[9px] text-[#00ff00] overflow-x-auto border border-[#004400]">
+{`/tool netwatch add host=9.9.9.9 interval=30s \\
+    up-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"WAN2\\\\\\",\\\\\\"status\\\\\\":\\\\\\"up\\\\\\"}\\" keep-result=no" \\
+    down-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"WAN2\\\\\\",\\\\\\"status\\\\\\":\\\\\\"down\\\\\\"}\\" keep-result=no"`}
+               </pre>
+             </div>
+
+             <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 text-[9px] text-yellow-500 uppercase">
+                <b>NOTA:</b> Reemplaza "WAN1" y "WAN2" en los scripts superiores con el nombre que registraste en el sistema. Para Antenas, usa la IP de la antena como 'host' en Netwatch.
+             </div>
+           </div>
         </div>
       </div>
     </div>

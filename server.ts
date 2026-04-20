@@ -800,6 +800,38 @@ async function startServer() {
     }
   });
 
+  // --- NEW: MIKROTIK PUSH WEBHOOK (Saves bandwidth by removing polling) ---
+  app.post("/api/mikrotik/webhook", async (req, res) => {
+    const { resource_id, status, latency = 0, type = 'device' } = req.body;
+    console.log(`[Webhook] Event Received: ${resource_id} is ${status} (${latency}ms)`);
+    
+    // 1. Log to DB
+    const device = db.prepare("SELECT * FROM devices WHERE id = ? OR name = ?").get(resource_id, resource_id) as any;
+    const deviceId = device ? device.id : resource_id;
+    
+    db.prepare("INSERT INTO logs (deviceId, status, latency) VALUES (?, ?, ?)").run(deviceId, status, latency);
+    
+    if (device) {
+      db.prepare("UPDATE devices SET status = ?, lastSeen = CURRENT_TIMESTAMP WHERE id = ?").run(status, device.id);
+    }
+
+    // 2. Immediate Telegram Notify
+    const settings = getSetting("global") || {};
+    if (settings.telegramBotToken && settings.telegramChatId) {
+       const emoji = status === 'up' ? '✅' : '🚨';
+       const msg = `<b>${emoji} EVENTO DETECTADO</b>\n\n<b>Recurso:</b> ${resource_id.toUpperCase()}\n<b>Estado:</b> ${status.toUpperCase()}\n<b>Latencia:</b> ${latency}ms\n<b>Timestamp:</b> ${new Date().toISOString()}`;
+       
+       const chatIds = settings.telegramChatId.split(',').map((id: string) => id.trim());
+       for (const cid of chatIds) {
+         axios.post(`https://api.telegram.org/bot${settings.telegramBotToken}/sendMessage`, {
+           chat_id: cid, text: msg, parse_mode: 'HTML'
+         }).catch(e => console.error("Webhook Telegram Error:", e.message));
+       }
+    }
+
+    res.json({ success: true });
+  });
+
   // Telegram Webhook Handler
   app.post("/api/telegram-webhook", async (req, res) => {
     const { message, callback_query } = req.body;
@@ -1210,7 +1242,7 @@ async function startServer() {
     // Monitoring Loop pulse
     const runMonitorPulse = async () => {
       await monitorDevices();
-      setTimeout(runMonitorPulse, 30000); // Pulse every 30s
+      setTimeout(runMonitorPulse, 300000); // Pulse every 5 minutes (300s)
     };
 
     // Start background tasks AFTER server is listening
