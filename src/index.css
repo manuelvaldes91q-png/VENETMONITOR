@@ -1,118 +1,86 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-}
-
-:root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
-  --card: #111111;
-  --card-foreground: #ededed;
-  --popover: #111111;
-  --popover-foreground: #ededed;
-  --primary: #3b82f6;
-  --primary-foreground: #ffffff;
-  --secondary: #1a1a1a;
-  --secondary-foreground: #ededed;
-  --muted: #1a1a1a;
-  --muted-foreground: #a1a1aa;
-  --accent: #1a1a1a;
-  --accent-foreground: #ededed;
-  --destructive: #ef4444;
-  --destructive-foreground: #fafafa;
-  --border: #262626;
-  --input: #262626;
-  --ring: #3b82f6;
-  --radius: 0.75rem;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
 }
 
 @layer base {
-  * {
-    @apply border-border;
+  :root {
+    --background: 0 0% 0%;
+    --foreground: 120 100% 50%;
+    --card: 0 0% 0%;
+    --card-foreground: 120 100% 50%;
+    --popover: 0 0% 0%;
+    --popover-foreground: 120 100% 50%;
+    --primary: 120 100% 50%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 120 30% 10%;
+    --secondary-foreground: 120 100% 50%;
+    --muted: 120 30% 10%;
+    --muted-foreground: 120 50% 30%;
+    --accent: 120 30% 10%;
+    --accent-foreground: 120 100% 50%;
+    --destructive: 0 100% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 120 50% 15%;
+    --input: 120 50% 15%;
+    --ring: 120 100% 50%;
   }
+
   body {
-    @apply bg-background text-foreground antialiased selection:bg-blue-500/30;
-    font-family: var(--font-sans);
+    @apply bg-black text-[#00ff00] antialiased selection:bg-[#00ff00] selection:text-black font-mono;
+    font-feature-settings: "ss01", "ss02", "cv01", "cv02";
+  }
+
+  /* Force zero radius for terminal look */
+  * {
+    border-radius: 0px !important;
   }
 }
 
-@layer utilities {
-  .neon-border {
-    box-shadow: 0 0 10px rgba(59, 130, 246, 0.2), inset 0 0 5px rgba(59, 130, 246, 0.05);
+@layer components {
+  .terminal-box {
+    @apply border border-[#004400] bg-black p-4 relative;
   }
   
-  .hardware-grid {
-    background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-    background-size: 24px 24px;
+  .terminal-box::before {
+    content: '';
+    @apply absolute top-0 left-0 w-full h-[1px] bg-[#00ff00]/10;
   }
 
-  /* Scanline effect */
-  .scanline {
-    width: 100%;
-    height: 100px;
-    z-index: 50;
-    pointer-events: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    background: linear-gradient(to bottom, transparent, rgba(59, 130, 246, 0.01) 50%, transparent);
-    animation: scan 10s linear infinite;
+  .terminal-header {
+    @apply bg-[#004400]/20 border-b border-[#004400] px-4 py-2 flex items-center justify-between;
   }
 
-  .vigilance-pulse {
-    animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  .terminal-table-header {
+    @apply border-b border-[#004400] text-[#008800] uppercase text-[10px] font-bold;
+  }
+
+  .terminal-btn {
+    @apply bg-transparent border border-[#00ff00] text-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-none font-bold uppercase text-[10px] px-4 py-2 disabled:opacity-30 disabled:cursor-not-allowed;
+  }
+  
+  .terminal-input {
+    @apply bg-black border border-[#004400] text-[#00ff00] placeholder:text-[#004400] focus:border-[#00ff00] focus:ring-0 outline-none px-3 py-2 text-sm;
   }
 }
 
-@keyframes scan {
-  from { top: -100px; }
-  to { top: 100%; }
-}
-
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; filter: brightness(1.2) drop-shadow(0 0 3px currentColor); }
-  50% { opacity: 0.7; filter: brightness(0.9) drop-shadow(0 0 1px currentColor); }
-}
-
-/* Custom scrollbar for dark theme */
+/* Custom Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #0a0a0a;
+  background: #000;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #262626;
-  border-radius: 4px;
+  background: #002200;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #333;
+  background: #00ff00;
 }
