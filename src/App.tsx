@@ -473,9 +473,11 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
     const isWan = device.name.toUpperCase().includes('WAN');
     const host = isWan ? (device.name.toUpperCase().includes('WAN1') ? '8.8.8.8' : '9.9.9.9') : device.ip;
     
+    const baseUrl = `${window.location.origin}/api/mikrotik/webhook`;
+    
     return `/tool netwatch add host=${host} interval=30s comment="${device.name}" \\
-    up-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"${device.name}\\\\\\",\\\\\\"status\\\\\\":\\\\\\"up\\\\\\"}\\" keep-result=no" \\
-    down-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"${device.name}\\\\\\",\\\\\\"status\\\\\\":\\\\\\"down\\\\\\"}\\" keep-result=no"`;
+    up-script="/tool fetch url=\\"${baseUrl}?resource_id=${device.name}&status=up\\" keep-result=no" \\
+    down-script="/tool fetch url=\\"${baseUrl}?resource_id=${device.name}&status=down\\" keep-result=no"`;
   };
 
   return (

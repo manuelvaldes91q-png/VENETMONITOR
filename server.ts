@@ -801,8 +801,16 @@ async function startServer() {
   });
 
   // --- NEW: MIKROTIK PUSH WEBHOOK (Saves bandwidth by removing polling) ---
-  app.post("/api/mikrotik/webhook", async (req, res) => {
-    const { resource_id, status, latency = 0, type = 'device' } = req.body;
+  app.all("/api/mikrotik/webhook", async (req, res) => {
+    // Universal extraction from Body (POST) or Query (GET)
+    const resource_id = req.body?.resource_id || req.query?.resource_id;
+    const status = req.body?.status || req.query?.status;
+    const latency = parseFloat(req.body?.latency || req.query?.latency || '0');
+    
+    if (!resource_id || !status) {
+      return res.status(400).json({ error: "Missing identity or status" });
+    }
+
     console.log(`[Webhook] Event Received: ${resource_id} is ${status} (${latency}ms)`);
     
     // 1. Log to DB
