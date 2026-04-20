@@ -427,6 +427,7 @@ function DashboardView({ devices, settings }: any) {
 
 function InfrastructureView({ mode, devices, onRefresh }: any) {
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [cliDevice, setCliDevice] = useState<Device | null>(null);
   const [newDevice, setNewDevice] = useState<Partial<Device>>({
     type: mode === 'mikrotik' ? 'router' : 'antenna',
     telegramEnabled: true
@@ -450,6 +451,15 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
     }
   };
 
+  const getMikroTikScript = (device: Device) => {
+    const isWan = device.name.toUpperCase().includes('WAN');
+    const host = isWan ? (device.name.toUpperCase().includes('WAN1') ? '8.8.8.8' : '9.9.9.9') : device.ip;
+    
+    return `/tool netwatch add host=${host} interval=30s comment="${device.name}" \\
+    up-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"${device.name}\\\\\\",\\\\\\"status\\\\\\":\\\\\\"up\\\\\\"}\\" keep-result=no" \\
+    down-script="/tool fetch url=\\"${window.location.origin}/api/mikrotik/webhook\\" http-method=post http-data=\\"{\\\\\\"resource_id\\\\\\":\\\\\\"${device.name}\\\\\\",\\\\\\"status\\\\\\":\\\\\\"down\\\\\\"}\\" keep-result=no"`;
+  };
+
   return (
     <div className="space-y-6">
       <header className="flex justify-between items-center terminal-box border-b-2 border-b-[#00ff00] p-4">
@@ -457,39 +467,29 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
           <h2 className="text-xl font-bold uppercase tracking-widest">{mode === 'mikrotik' ? 'INFR_MIKROTIK' : 'NODE_EQUIPMENT'}</h2>
           <p className="text-[9px] text-[#008800] font-bold uppercase">NODES_MOUNTED: {devices.length}</p>
         </div>
-        <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-          <DialogTrigger asChild>
-            <button className="terminal-btn flex items-center gap-2">
-              <Plus className="w-3 h-3" /> REGISTER_HARDWARE
-            </button>
-          </DialogTrigger>
-          <DialogContent className="bg-black border-2 border-[#00ff00] text-[#00ff00] font-mono rounded-none">
-            <DialogHeader><DialogTitle className="text-[#00ff00] font-bold uppercase">SYS_REGISTRY::V01</DialogTitle></DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1">
-                <Label className="text-[10px] uppercase text-[#008800]">Identity</Label>
-                <input value={newDevice.name || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, name: e.target.value})} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-[10px] uppercase text-[#008800]">Network_IP</Label>
-                <input value={newDevice.ip || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, ip: e.target.value})} />
-              </div>
-              {mode === 'mikrotik' && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <Label className="text-[10px] uppercase text-[#008800]">API_User</Label>
-                    <input value={newDevice.username || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, username: e.target.value})} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-[10px] uppercase text-[#008800]">API_Code</Label>
-                    <input type="password" value={newDevice.password || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, password: e.target.value})} />
-                  </div>
+        <div className="flex gap-2">
+          <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+            <DialogTrigger asChild>
+              <button className="terminal-btn flex items-center gap-2">
+                <Plus className="w-3 h-3" /> REGISTER_HARDWARE
+              </button>
+            </DialogTrigger>
+            <DialogContent className="bg-black border-2 border-[#00ff00] text-[#00ff00] font-mono rounded-none">
+              <DialogHeader><DialogTitle className="text-[#00ff00] font-bold uppercase">SYS_REGISTRY::V01</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase text-[#008800]">Identity (Ej: WAN1, Antena-01)</Label>
+                  <input value={newDevice.name || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, name: e.target.value})} />
                 </div>
-              )}
-            </div>
-            <DialogFooter><button onClick={handleAdd} className="terminal-btn w-full py-4 text-sm bg-[#00ff00] text-black">COMMIT_CHANGES</button></DialogFooter>
-          </DialogContent>
-        </Dialog>
+                <div className="space-y-1">
+                  <Label className="text-[10px] uppercase text-[#008800]">Network_IP (IP de la Antena)</Label>
+                  <input value={newDevice.ip || ''} className="terminal-input w-full" onChange={e => setNewDevice({...newDevice, ip: e.target.value})} />
+                </div>
+              </div>
+              <DialogFooter><button onClick={handleAdd} className="terminal-btn w-full py-4 text-sm bg-[#00ff00] text-black">COMMIT_CHANGES</button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </header>
 
       <div className="terminal-box p-0 overflow-hidden">
@@ -515,7 +515,13 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
                     {d.status.toUpperCase()}
                   </span>
                 </td>
-                <td className="p-3 text-right">
+                <td className="p-3 text-right space-x-2">
+                   <button 
+                     onClick={() => setCliDevice(d)} 
+                     className="text-[#00ff00] hover:underline"
+                   >
+                     [CLI]
+                   </button>
                    <button onClick={() => axios.delete(`/api/devices/${d.id}`).then(onRefresh)} className="text-[#004400] hover:text-red-500">[DEL]</button>
                 </td>
               </tr>
@@ -523,6 +529,26 @@ function InfrastructureView({ mode, devices, onRefresh }: any) {
           </tbody>
         </table>
       </div>
+
+      <Dialog open={!!cliDevice} onOpenChange={() => setCliDevice(null)}>
+        <DialogContent className="bg-black border-2 border-[#00ff00] text-[#00ff00] font-mono rounded-none max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-[#00ff00] font-bold uppercase">MIKROTIK_CLI_CONFIG :: {cliDevice?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+             <p className="text-[10px] text-[#008800]">Pega este código en la terminal de tu MikroTik (New Terminal) para que este equipo sea monitoreado:</p>
+             <pre className="bg-[#001100] p-4 text-[9px] text-[#00ff00] border border-[#004400] overflow-x-auto whitespace-pre-wrap decoration-none">
+                {cliDevice ? getMikroTikScript(cliDevice) : ''}
+             </pre>
+             <div className="p-2 border border-[#004400] bg-yellow-500/10 text-[8px] text-yellow-500">
+                IMPORTANTE: Este script usa Netwatch. Tu MikroTik necesita tener acceso a Internet para enviar la notificación fetch al VPS.
+             </div>
+          </div>
+          <DialogFooter>
+             <button onClick={() => setCliDevice(null)} className="terminal-btn px-6 text-sm">CERRAR</button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
