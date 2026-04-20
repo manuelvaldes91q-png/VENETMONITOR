@@ -362,6 +362,8 @@ function DashboardView({ devices, settings }: any) {
       } catch (e) {}
     };
     fetchStats();
+    const interval = setInterval(fetchStats, 30000); // 30s light heart-beat
+    return () => clearInterval(interval);
   }, [devices]);
 
   return (

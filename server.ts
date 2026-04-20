@@ -815,7 +815,24 @@ async function startServer() {
       db.prepare("UPDATE devices SET status = ?, lastSeen = CURRENT_TIMESTAMP WHERE id = ?").run(status, device.id);
     }
 
-    // 2. Immediate Telegram Notify
+    // 2. Update Global Stats (Dashboard View)
+    const isWan = String(resource_id).toUpperCase().includes('WAN');
+    if (isWan) {
+       const wanKey = String(resource_id).toUpperCase().includes('WAN1') ? 'WAN1' : 'WAN2';
+       const globalSettings = getSetting("global") || {};
+       const wanStatus = globalSettings.wanStatus || {};
+       
+       wanStatus[wanKey] = { 
+         ...wanStatus[wanKey],
+         status, 
+         updatedAt: new Date().toISOString()
+       };
+
+       setSetting("global", { ...globalSettings, wanStatus });
+       console.log(`[Webhook] Updated Global ${wanKey} status to ${status}`);
+    }
+
+    // 3. Immediate Telegram Notify
     const settings = getSetting("global") || {};
     if (settings.telegramBotToken && settings.telegramChatId) {
        const emoji = status === 'up' ? '✅' : '🚨';
