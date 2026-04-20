@@ -816,7 +816,7 @@ function OracleView({ devices, logs, onAsk, oracleData, loading, onManualTrigger
   );
 }
 
-function LogsView({ logs, devices }: any) {
+function LogsView({ logs = [], devices = [] }: any) {
   return (
     <div className="space-y-6">
       <header className="border-b border-[#004400] pb-2">
@@ -833,22 +833,35 @@ function LogsView({ logs, devices }: any) {
             </tr>
           </thead>
           <tbody className="font-mono text-[10px]">
-            {logs.map((l: any) => {
+            {Array.isArray(logs) && logs.length > 0 ? logs.map((l: any) => {
               const device = devices.find((d: any) => d.id === l.deviceId);
-              const dateStr = l.timestamp.includes('T') ? l.timestamp : l.timestamp.replace(' ', 'T') + (l.timestamp.endsWith('Z') ? '' : 'Z');
-              const localTime = new Date(dateStr).toLocaleTimeString();
+              let localTime = "??:??:??";
+              try {
+                if (l.timestamp) {
+                  const dateStr = l.timestamp.includes('T') ? l.timestamp : l.timestamp.replace(' ', 'T') + (l.timestamp.endsWith('Z') ? '' : 'Z');
+                  localTime = new Date(dateStr).toLocaleTimeString();
+                }
+              } catch (e) {}
+
+              const status = (l.status || 'unknown').toUpperCase();
               
               return (
-                <tr key={l.id} className="border-b border-[#002200] text-[#008800]">
+                <tr key={l.id || Math.random()} className="border-b border-[#002200] text-[#008800]">
                   <td className="p-3 opacity-60">{localTime}</td>
-                  <td className="p-3 text-white">{device?.name?.toUpperCase() || 'SYS_SYNC'}</td>
+                  <td className="p-3 text-white">{device?.name?.toUpperCase() || 'SYS_EVENT'}</td>
                   <td className="p-3 text-center">
-                    <span className={l.status === 'up' ? 'text-[#00ff00]' : 'text-red-600'}>[{l.status.toUpperCase()}]</span>
+                    <span className={status === 'UP' ? 'text-[#00ff00]' : 'text-red-600'}>[{status}]</span>
                   </td>
-                  <td className="p-3 text-right">{l.latency}ms</td>
+                  <td className="p-3 text-right">{l.latency || 0}ms</td>
                 </tr>
               );
-            })}
+            }) : (
+              <tr>
+                <td colSpan={4} className="p-8 text-center text-[#004400] italic">
+                  NO_LOG_ENTRIES_FOUND_IN_BUFFER
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
